@@ -70,10 +70,48 @@ func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (Task, error) {
 	return i, err
 }
 
+const listTasksByBoard = `-- name: ListTasksByBoard :many
+SELECT t.id, t.column_id, t.title, t.description, t.position, t.version, t.created_by, t.created_at, t.updated_at
+FROM tasks t
+JOIN columns c ON c.id = t.column_id
+WHERE c.board_id = $1
+ORDER BY t.position, t.id
+`
+
+func (q *Queries) ListTasksByBoard(ctx context.Context, boardID uuid.UUID) ([]Task, error) {
+	rows, err := q.db.Query(ctx, listTasksByBoard, boardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.ColumnID,
+			&i.Title,
+			&i.Description,
+			&i.Position,
+			&i.Version,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasksByColumn = `-- name: ListTasksByColumn :many
 SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at FROM tasks
 WHERE column_id = $1
-ORDER BY position
+ORDER BY position, id
 `
 
 func (q *Queries) ListTasksByColumn(ctx context.Context, columnID uuid.UUID) ([]Task, error) {

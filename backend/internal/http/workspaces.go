@@ -123,29 +123,55 @@ func (h *workspaceHandler) removeMember(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// requireWorkspace authorizes action on the {id} workspace of the path and
-// stores the caller's role in the context. It must run after requireAuth.
-func requireWorkspace(ws *service.WorkspaceService, action auth.Action, next http.Handler) http.Handler {
+// workspaceResolver finds the workspace a request targets: from the path, or
+// through the board or column it names. A missing resource must be reported
+// as service.ErrNotMember so it is indistinguishable from a forbidden one.
+type workspaceResolver func(r *http.Request) (uuid.UUID, error)
+
+var errBadPathID = errors.New("invalid id in path")
+
+// pathUUID parses the {id} path segment.
+func pathUUID(r *http.Request) (uuid.UUID, error) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		return uuid.Nil, errBadPathID
+	}
+	return id, nil
+}
+
+// workspaceFromPath is the resolver for /workspaces/{id}/... routes.
+func workspaceFromPath(r *http.Request) (uuid.UUID, error) { return pathUUID(r) }
+
+// requireAccess resolves the target workspace, authorizes action on it and
+// stores the workspace id and the caller's role in the context. It must run
+// after requireAuth. Every route under a workspace goes through it.
+func requireAccess(ws *service.WorkspaceService, action auth.Action, resolve workspaceResolver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := uuid.Parse(r.PathValue("id"))
-		if err != nil {
+		wsID, err := resolve(r)
+		if errors.Is(err, errBadPathID) || errors.Is(err, service.ErrNotMember) {
 			WriteError(w, http.StatusForbidden, CodeForbidden, msgNoWorkspaceAccess)
+			return
+		}
+		if err != nil {
+			internalError(w, r, "resolve workspace", err)
 			return
 		}
 		userID, _ := auth.UserID(r.Context())
 
-		role, err := ws.Authorize(r.Context(), id, userID, action)
+		role, err := ws.Authorize(r.Context(), wsID, userID, action)
 		if err != nil {
 			writeWorkspaceError(w, r, "authorize workspace", err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithWorkspaceRole(r.Context(), role)))
+		ctx := auth.WithWorkspaceRole(auth.WithWorkspaceID(r.Context(), wsID), role)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// workspaceID is only called behind requireWorkspace, which validated it.
+// workspaceID is only called behind requireAccess, which stored it.
 func workspaceID(r *http.Request) uuid.UUID {
-	return uuid.MustParse(r.PathValue("id"))
+	id, _ := auth.WorkspaceID(r.Context())
+	return id
 }
 
 // memberIDFromPath parses {userId}. The caller is already an admin of the

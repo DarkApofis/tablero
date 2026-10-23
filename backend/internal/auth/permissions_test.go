@@ -11,17 +11,17 @@ func TestPermissionMatrix(t *testing.T) {
 	// has to be made consciously in both places.
 	want := map[db.WorkspaceRole]map[Action]bool{
 		db.WorkspaceRoleAdmin: {
-			ActionRead: true, ActionEditTasks: true, ActionManageMembers: true, ActionManageSettings: true,
+			ActionRead: true, ActionEditTasks: true, ActionManageMembers: true, ActionManageSettings: true, ActionManageBoards: true,
 		},
 		db.WorkspaceRoleMember: {
-			ActionRead: true, ActionEditTasks: true, ActionManageMembers: false, ActionManageSettings: false,
+			ActionRead: true, ActionEditTasks: true, ActionManageMembers: false, ActionManageSettings: false, ActionManageBoards: false,
 		},
 		db.WorkspaceRoleViewer: {
-			ActionRead: true, ActionEditTasks: false, ActionManageMembers: false, ActionManageSettings: false,
+			ActionRead: true, ActionEditTasks: false, ActionManageMembers: false, ActionManageSettings: false, ActionManageBoards: false,
 		},
 	}
 
-	actions := []Action{ActionRead, ActionEditTasks, ActionManageMembers, ActionManageSettings}
+	actions := []Action{ActionRead, ActionEditTasks, ActionManageMembers, ActionManageSettings, ActionManageBoards}
 	for role, perms := range want {
 		for _, action := range actions {
 			t.Run(string(role)+"/"+action.String(), func(t *testing.T) {

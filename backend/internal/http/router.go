@@ -14,6 +14,7 @@ type Deps struct {
 	Auth         *service.AuthService
 	Tokens       *auth.TokenIssuer
 	Workspaces   *service.WorkspaceService
+	Boards       *service.BoardService
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
@@ -29,16 +30,28 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("GET /me", requireAuth(d.Tokens, http.HandlerFunc(ah.me)))
 
 	authed := func(h http.HandlerFunc) http.Handler { return requireAuth(d.Tokens, h) }
-	inWorkspace := func(action auth.Action, h http.HandlerFunc) http.Handler {
-		return requireAuth(d.Tokens, requireWorkspace(d.Workspaces, action, h))
+	// Every route inside a workspace is authorized against the caller's role there.
+	guarded := func(resolve workspaceResolver, action auth.Action, h http.HandlerFunc) http.Handler {
+		return requireAuth(d.Tokens, requireAccess(d.Workspaces, action, resolve, h))
 	}
 
 	wh := &workspaceHandler{ws: d.Workspaces}
 	mux.Handle("POST /workspaces", authed(wh.create))
 	mux.Handle("GET /workspaces", authed(wh.list))
-	mux.Handle("GET /workspaces/{id}/members", inWorkspace(auth.ActionRead, wh.listMembers))
-	mux.Handle("PATCH /workspaces/{id}/members/{userId}", inWorkspace(auth.ActionManageMembers, wh.changeRole))
-	mux.Handle("DELETE /workspaces/{id}/members/{userId}", inWorkspace(auth.ActionManageMembers, wh.removeMember))
+	mux.Handle("GET /workspaces/{id}/members", guarded(workspaceFromPath, auth.ActionRead, wh.listMembers))
+	mux.Handle("PATCH /workspaces/{id}/members/{userId}", guarded(workspaceFromPath, auth.ActionManageMembers, wh.changeRole))
+	mux.Handle("DELETE /workspaces/{id}/members/{userId}", guarded(workspaceFromPath, auth.ActionManageMembers, wh.removeMember))
+
+	bh := &boardHandler{boards: d.Boards}
+	mux.Handle("GET /workspaces/{id}/boards", guarded(workspaceFromPath, auth.ActionRead, bh.listBoards))
+	mux.Handle("POST /workspaces/{id}/boards", guarded(workspaceFromPath, auth.ActionManageBoards, bh.createBoard))
+	mux.Handle("GET /boards/{id}", guarded(bh.boardWorkspace, auth.ActionRead, bh.getBoard))
+	mux.Handle("PATCH /boards/{id}", guarded(bh.boardWorkspace, auth.ActionManageBoards, bh.renameBoard))
+	mux.Handle("DELETE /boards/{id}", guarded(bh.boardWorkspace, auth.ActionManageBoards, bh.deleteBoard))
+	mux.Handle("POST /boards/{id}/columns", guarded(bh.boardWorkspace, auth.ActionManageBoards, bh.createColumn))
+	mux.Handle("PATCH /columns/{id}", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.renameColumn))
+	mux.Handle("DELETE /columns/{id}", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.deleteColumn))
+	mux.Handle("POST /columns/{id}/move", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.moveColumn))
 
 	var h http.Handler = withJSONMuxErrors(mux)
 	h = withCORS(d.CORSOrigins, h)

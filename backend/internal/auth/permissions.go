@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"github.com/DarkApofis/tablero/backend/internal/db"
 )
 
@@ -18,6 +20,8 @@ const (
 	ActionManageMembers
 	// ActionManageSettings: rename the workspace and other settings.
 	ActionManageSettings
+	// ActionManageBoards: create, rename, delete and reorder boards and columns.
+	ActionManageBoards
 )
 
 func (a Action) String() string {
@@ -30,6 +34,8 @@ func (a Action) String() string {
 		return "manage_members"
 	case ActionManageSettings:
 		return "manage_settings"
+	case ActionManageBoards:
+		return "manage_boards"
 	}
 	return "unknown"
 }
@@ -41,6 +47,8 @@ var permissions = map[db.WorkspaceRole]map[Action]bool{
 		ActionEditTasks:      true,
 		ActionManageMembers:  true,
 		ActionManageSettings: true,
+		// Board structure is admin-only: the matrix gives members tasks only.
+		ActionManageBoards: true,
 	},
 	db.WorkspaceRoleMember: {
 		ActionRead:      true,
@@ -56,7 +64,21 @@ func Can(role db.WorkspaceRole, action Action) bool {
 	return permissions[role][action]
 }
 
-type roleCtxKey struct{}
+type (
+	roleCtxKey        struct{}
+	workspaceIDCtxKey struct{}
+)
+
+// WithWorkspaceID stores the workspace the request was authorized against.
+func WithWorkspaceID(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, workspaceIDCtxKey{}, id)
+}
+
+// WorkspaceID returns the workspace the request was authorized against.
+func WorkspaceID(ctx context.Context) (uuid.UUID, bool) {
+	id, ok := ctx.Value(workspaceIDCtxKey{}).(uuid.UUID)
+	return id, ok
+}
 
 // WithWorkspaceRole stores the caller's role in the current workspace.
 func WithWorkspaceRole(ctx context.Context, role db.WorkspaceRole) context.Context {

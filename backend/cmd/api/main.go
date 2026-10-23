@@ -54,6 +54,7 @@ func run() error {
 			Auth:         service.NewAuthService(db.New(pool), tokens, cfg.RefreshTokenTTL),
 			Tokens:       tokens,
 			Workspaces:   service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
+			Boards:       service.NewBoardService(pool),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

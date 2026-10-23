@@ -10,7 +10,14 @@ WHERE id = $1;
 -- name: ListTasksByColumn :many
 SELECT * FROM tasks
 WHERE column_id = $1
-ORDER BY position;
+ORDER BY position, id;
+
+-- name: ListTasksByBoard :many
+SELECT t.*
+FROM tasks t
+JOIN columns c ON c.id = t.column_id
+WHERE c.board_id = $1
+ORDER BY t.position, t.id;
 
 -- UpdateTask applies the change only if the caller saw the latest version.
 -- Zero rows (pgx.ErrNoRows) means a concurrent update won: return 409.
