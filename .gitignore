@@ -1,0 +1,7 @@
+node_modules/
+.next/
+.env
+bin/
+
+# Configuración local de Claude Code
+.claude/settings.local.json
