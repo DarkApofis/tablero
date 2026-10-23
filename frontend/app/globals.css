@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/* Design tokens from docs/design/Tablero standalone.html. Dark is the default. */
+:root {
+  color-scheme: dark;
+  --bg: #0b0c0e;
+  --surface: #131518;
+  --surface2: #1a1d21;
+  --raised: #20242a;
+  --border: #262a31;
+  --border-strong: #3a4049;
+  --text: #eceef1;
+  --muted: #a0a7b1;
+  --faint: #848c97;
+  --accent: #3ee6b0;
+  --accent-ink: #04261b;
+  --accent-text: #3ee6b0;
+  --accent-soft: rgba(62, 230, 176, 0.13);
+  --danger: #ff8b94;
+  --danger-soft: rgba(255, 122, 133, 0.12);
+  --warn: #f5b64a;
+  --warn-soft: rgba(245, 182, 74, 0.12);
+  --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f3f4f6;
+    --surface: #ffffff;
+    --surface2: #f4f5f7;
+    --raised: #ffffff;
+    --border: #e1e4e8;
+    --border-strong: #b9c0c9;
+    --text: #14171a;
+    --muted: #4f5964;
+    --faint: #65707b;
+    --accent: #0a7a58;
+    --accent-ink: #ffffff;
+    --accent-text: #0a7a58;
+    --accent-soft: rgba(10, 122, 88, 0.09);
+    --danger: #c0283a;
+    --danger-soft: rgba(192, 40, 58, 0.08);
+    --warn: #955700;
+    --warn-soft: rgba(200, 120, 0, 0.1);
+    --shadow-lg: 0 18px 40px rgba(20, 23, 26, 0.16);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface2: #f4f5f7;
+  --raised: #ffffff;
+  --border: #e1e4e8;
+  --border-strong: #b9c0c9;
+  --text: #14171a;
+  --muted: #4f5964;
+  --faint: #65707b;
+  --accent: #0a7a58;
+  --accent-ink: #ffffff;
+  --accent-text: #0a7a58;
+  --accent-soft: rgba(10, 122, 88, 0.09);
+  --danger: #c0283a;
+  --danger-soft: rgba(192, 40, 58, 0.08);
+  --warn: #955700;
+  --warn-soft: rgba(200, 120, 0, 0.1);
+  --shadow-lg: 0 18px 40px rgba(20, 23, 26, 0.16);
+}
+
+/* Expose tokens as Tailwind utilities: bg-surface, text-muted, border-border, ... */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface2: var(--surface2);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --shadow-pop: var(--shadow-lg);
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-size: 14px;
+}
