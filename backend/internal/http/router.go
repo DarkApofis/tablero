@@ -3,12 +3,16 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/DarkApofis/tablero/backend/internal/auth"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 type Deps struct {
-	CORSOrigins []string
-	Health      *service.HealthService
+	CORSOrigins  []string
+	CookieSecure bool
+	Health       *service.HealthService
+	Auth         *service.AuthService
+	Tokens       *auth.TokenIssuer
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
@@ -17,6 +21,11 @@ func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth(d.Health))
+
+	ah := &authHandler{auth: d.Auth, cookieSecure: d.CookieSecure}
+	mux.HandleFunc("POST /auth/register", ah.register)
+	mux.HandleFunc("POST /auth/login", ah.login)
+	mux.Handle("GET /me", requireAuth(d.Tokens, http.HandlerFunc(ah.me)))
 
 	var h http.Handler = withJSONMuxErrors(mux)
 	h = withCORS(d.CORSOrigins, h)

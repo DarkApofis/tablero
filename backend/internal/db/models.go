@@ -7,8 +7,9 @@ package db
 import (
 	"database/sql/driver"
 	"fmt"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
 type WorkspaceRole string
@@ -55,49 +56,58 @@ func (ns NullWorkspaceRole) Value() (driver.Value, error) {
 }
 
 type Board struct {
-	ID          pgtype.UUID
-	WorkspaceID pgtype.UUID
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
 	Name        string
-	CreatedAt   pgtype.Timestamptz
+	CreatedAt   time.Time
 }
 
 type Column struct {
-	ID        pgtype.UUID
-	BoardID   pgtype.UUID
+	ID        uuid.UUID
+	BoardID   uuid.UUID
 	Name      string
 	Position  float64
-	CreatedAt pgtype.Timestamptz
+	CreatedAt time.Time
+}
+
+type RefreshToken struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+	CreatedAt time.Time
 }
 
 type Task struct {
-	ID          pgtype.UUID
-	ColumnID    pgtype.UUID
+	ID          uuid.UUID
+	ColumnID    uuid.UUID
 	Title       string
 	Description string
 	Position    float64
 	Version     int32
-	CreatedBy   pgtype.UUID
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
+	CreatedBy   uuid.NullUUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type User struct {
-	ID           pgtype.UUID
+	ID           uuid.UUID
 	Email        string
 	PasswordHash string
 	Name         string
-	CreatedAt    pgtype.Timestamptz
+	CreatedAt    time.Time
 }
 
 type Workspace struct {
-	ID        pgtype.UUID
+	ID        uuid.UUID
 	Name      string
-	CreatedAt pgtype.Timestamptz
+	CreatedAt time.Time
 }
 
 type WorkspaceMember struct {
-	WorkspaceID pgtype.UUID
-	UserID      pgtype.UUID
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
 	Role        WorkspaceRole
-	CreatedAt   pgtype.Timestamptz
+	CreatedAt   time.Time
 }

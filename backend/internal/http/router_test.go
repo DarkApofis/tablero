@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/DarkApofis/tablero/backend/internal/auth"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -16,9 +18,12 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
 func newTestRouter(pingErr error) http.Handler {
+	tokens := auth.NewTokenIssuer(testSecret, 15*time.Minute)
 	return NewRouter(Deps{
 		CORSOrigins: []string{"http://localhost:3000"},
 		Health:      service.NewHealthService(fakePinger{err: pingErr}),
+		Auth:        service.NewAuthService(newFakeStore(), tokens, time.Hour),
+		Tokens:      tokens,
 	})
 }
 

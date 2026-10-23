@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DarkApofis/tablero/backend/internal/auth"
 	"github.com/DarkApofis/tablero/backend/internal/config"
 	"github.com/DarkApofis/tablero/backend/internal/db"
 	httpapi "github.com/DarkApofis/tablero/backend/internal/http"
@@ -42,11 +43,16 @@ func run() error {
 	defer pool.Close()
 	slog.Info("database connected")
 
+	tokens := auth.NewTokenIssuer(cfg.JWTSecret, cfg.AccessTokenTTL)
+
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: httpapi.NewRouter(httpapi.Deps{
-			CORSOrigins: cfg.CORSOrigins,
-			Health:      service.NewHealthService(pool),
+			CORSOrigins:  cfg.CORSOrigins,
+			CookieSecure: cfg.CookieSecure,
+			Health:       service.NewHealthService(pool),
+			Auth:         service.NewAuthService(db.New(pool), tokens, cfg.RefreshTokenTTL),
+			Tokens:       tokens,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

@@ -8,7 +8,7 @@ package db
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
 const createTask = `-- name: CreateTask :one
@@ -18,11 +18,11 @@ RETURNING id, column_id, title, description, position, version, created_by, crea
 `
 
 type CreateTaskParams struct {
-	ColumnID    pgtype.UUID
+	ColumnID    uuid.UUID
 	Title       string
 	Description string
 	Position    float64
-	CreatedBy   pgtype.UUID
+	CreatedBy   uuid.NullUUID
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -53,7 +53,7 @@ SELECT id, column_id, title, description, position, version, created_by, created
 WHERE id = $1
 `
 
-func (q *Queries) GetTask(ctx context.Context, id pgtype.UUID) (Task, error) {
+func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (Task, error) {
 	row := q.db.QueryRow(ctx, getTask, id)
 	var i Task
 	err := row.Scan(
@@ -76,7 +76,7 @@ WHERE column_id = $1
 ORDER BY position
 `
 
-func (q *Queries) ListTasksByColumn(ctx context.Context, columnID pgtype.UUID) ([]Task, error) {
+func (q *Queries) ListTasksByColumn(ctx context.Context, columnID uuid.UUID) ([]Task, error) {
 	rows, err := q.db.Query(ctx, listTasksByColumn, columnID)
 	if err != nil {
 		return nil, err
@@ -118,9 +118,9 @@ RETURNING id, column_id, title, description, position, version, created_by, crea
 `
 
 type UpdateTaskParams struct {
-	ID          pgtype.UUID
+	ID          uuid.UUID
 	Version     int32
-	ColumnID    pgtype.UUID
+	ColumnID    uuid.UUID
 	Title       string
 	Description string
 	Position    float64
