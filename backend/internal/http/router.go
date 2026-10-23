@@ -13,6 +13,7 @@ type Deps struct {
 	Health       *service.HealthService
 	Auth         *service.AuthService
 	Tokens       *auth.TokenIssuer
+	Workspaces   *service.WorkspaceService
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
@@ -26,6 +27,18 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("POST /auth/register", ah.register)
 	mux.HandleFunc("POST /auth/login", ah.login)
 	mux.Handle("GET /me", requireAuth(d.Tokens, http.HandlerFunc(ah.me)))
+
+	authed := func(h http.HandlerFunc) http.Handler { return requireAuth(d.Tokens, h) }
+	inWorkspace := func(action auth.Action, h http.HandlerFunc) http.Handler {
+		return requireAuth(d.Tokens, requireWorkspace(d.Workspaces, action, h))
+	}
+
+	wh := &workspaceHandler{ws: d.Workspaces}
+	mux.Handle("POST /workspaces", authed(wh.create))
+	mux.Handle("GET /workspaces", authed(wh.list))
+	mux.Handle("GET /workspaces/{id}/members", inWorkspace(auth.ActionRead, wh.listMembers))
+	mux.Handle("PATCH /workspaces/{id}/members/{userId}", inWorkspace(auth.ActionManageMembers, wh.changeRole))
+	mux.Handle("DELETE /workspaces/{id}/members/{userId}", inWorkspace(auth.ActionManageMembers, wh.removeMember))
 
 	var h http.Handler = withJSONMuxErrors(mux)
 	h = withCORS(d.CORSOrigins, h)

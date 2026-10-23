@@ -53,6 +53,7 @@ func run() error {
 			Health:       service.NewHealthService(pool),
 			Auth:         service.NewAuthService(db.New(pool), tokens, cfg.RefreshTokenTTL),
 			Tokens:       tokens,
+			Workspaces:   service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

@@ -19,6 +19,9 @@ const (
 	CodeInvalidCreds     = "invalid_credentials"
 	CodeEmailTaken       = "email_taken"
 	CodeUnauthorized     = "unauthorized"
+	CodeForbidden        = "forbidden"
+	CodeMemberNotFound   = "member_not_found"
+	CodeLastAdmin        = "last_admin"
 )
 
 const maxBodyBytes = 1 << 20
@@ -55,6 +58,12 @@ func WriteValidationError(w http.ResponseWriter, fields map[string]string) {
 		Message: "Revisa los datos enviados",
 		Fields:  fields,
 	}})
+}
+
+// internalError logs err with the request id and writes a generic 500.
+func internalError(w http.ResponseWriter, r *http.Request, op string, err error) {
+	slog.Error(op+" failed", "err", err, "request_id", RequestID(r.Context()))
+	WriteError(w, http.StatusInternalServerError, CodeInternal, "internal server error")
 }
 
 // decodeJSON reads a JSON body of at most 1 MiB into dst. On failure it has

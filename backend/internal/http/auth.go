@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -68,7 +67,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusConflict, CodeEmailTaken, "Ya existe una cuenta con ese correo")
 		return
 	case err != nil:
-		h.internalError(w, r, "register", err)
+		internalError(w, r, "register", err)
 		return
 	}
 	h.writeSession(w, http.StatusCreated, session)
@@ -89,7 +88,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnauthorized, CodeInvalidCreds, msgInvalidCredentials)
 		return
 	case err != nil:
-		h.internalError(w, r, "login", err)
+		internalError(w, r, "login", err)
 		return
 	}
 	h.writeSession(w, http.StatusOK, session)
@@ -104,7 +103,7 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "No autenticado")
 		return
 	case err != nil:
-		h.internalError(w, r, "me", err)
+		internalError(w, r, "me", err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newUserResponse(user))
@@ -128,11 +127,6 @@ func (h *authHandler) writeSession(w http.ResponseWriter, status int, s service.
 		TokenType:   "Bearer",
 		ExpiresIn:   int(time.Until(s.AccessExpiresAt).Round(time.Second).Seconds()),
 	})
-}
-
-func (h *authHandler) internalError(w http.ResponseWriter, r *http.Request, op string, err error) {
-	slog.Error(op+" failed", "err", err, "request_id", RequestID(r.Context()))
-	WriteError(w, http.StatusInternalServerError, CodeInternal, "internal server error")
 }
 
 // requireAuth rejects requests without a valid "Authorization: Bearer <jwt>"

@@ -55,6 +55,16 @@ func (ns NullWorkspaceRole) Value() (driver.Value, error) {
 	return string(ns.WorkspaceRole), nil
 }
 
+func (e WorkspaceRole) Valid() bool {
+	switch e {
+	case WorkspaceRoleAdmin,
+		WorkspaceRoleMember,
+		WorkspaceRoleViewer:
+		return true
+	}
+	return false
+}
+
 type Board struct {
 	ID          uuid.UUID
 	WorkspaceID uuid.UUID
