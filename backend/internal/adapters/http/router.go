@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 
+	appauth "github.com/DarkApofis/tablero/backend/internal/app/auth"
 	"github.com/DarkApofis/tablero/backend/internal/auth"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
@@ -10,9 +11,8 @@ import (
 type Deps struct {
 	CORSOrigins  []string
 	CookieSecure bool
-	Health       *service.HealthService
-	Auth         *service.AuthService
-	Tokens       *auth.TokenIssuer
+	Health       Pinger
+	Auth         *appauth.Service
 	Workspaces   *service.WorkspaceService
 	Boards       *service.BoardService
 	Tasks        *service.TaskService
@@ -30,12 +30,12 @@ func NewRouter(d Deps) http.Handler {
 	ah := &authHandler{auth: d.Auth, cookieSecure: d.CookieSecure}
 	mux.HandleFunc("POST /auth/register", ah.register)
 	mux.HandleFunc("POST /auth/login", ah.login)
-	mux.Handle("GET /me", requireAuth(d.Tokens, http.HandlerFunc(ah.me)))
+	mux.Handle("GET /me", requireAuth(d.Auth, http.HandlerFunc(ah.me)))
 
-	authed := func(h http.HandlerFunc) http.Handler { return requireAuth(d.Tokens, h) }
+	authed := func(h http.HandlerFunc) http.Handler { return requireAuth(d.Auth, h) }
 	// Every route inside a workspace is authorized against the caller's role there.
 	guarded := func(resolve workspaceResolver, action auth.Action, h http.HandlerFunc) http.Handler {
-		return requireAuth(d.Tokens, requireAccess(d.Workspaces, action, resolve, h))
+		return requireAuth(d.Auth, requireAccess(d.Workspaces, action, resolve, h))
 	}
 
 	wh := &workspaceHandler{ws: d.Workspaces}

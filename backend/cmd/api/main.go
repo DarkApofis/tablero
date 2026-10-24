@@ -10,12 +10,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/hasher"
+	httpapi "github.com/DarkApofis/tablero/backend/internal/adapters/http"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
+	"github.com/DarkApofis/tablero/backend/internal/app/auth"
 	"github.com/DarkApofis/tablero/backend/internal/config"
-	"github.com/DarkApofis/tablero/backend/internal/db"
-	httpapi "github.com/DarkApofis/tablero/backend/internal/http"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
+
+// main.go is the composition root: it builds the adapters, hands them to the
+// use cases as ports, and the use cases to the HTTP adapter. Wiring is manual
+// on purpose; there is no DI framework.
+
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -36,23 +46,27 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	slog.Info("database connected")
 
-	tokens := auth.NewTokenIssuer(cfg.JWTSecret, cfg.AccessTokenTTL)
+	users := postgres.NewUsers(pool)
+	authService, err := auth.NewService(users, users, hasher.Argon2id{},
+		token.NewIssuer(cfg.JWTSecret, cfg.AccessTokenTTL), systemClock{}, cfg.RefreshTokenTTL)
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: httpapi.NewRouter(httpapi.Deps{
 			CORSOrigins:  cfg.CORSOrigins,
 			CookieSecure: cfg.CookieSecure,
-			Health:       service.NewHealthService(pool),
-			Auth:         service.NewAuthService(db.New(pool), tokens, cfg.RefreshTokenTTL),
-			Tokens:       tokens,
+			Health:       pool,
+			Auth:         authService,
 			Workspaces:   service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 			Boards:       service.NewBoardService(pool),
 			Tasks:        service.NewTaskService(pool),

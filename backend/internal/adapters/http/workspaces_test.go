@@ -14,8 +14,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -73,7 +74,7 @@ func (f *fakeWorkspaceStore) ListWorkspaceMembers(_ context.Context, wsID uuid.U
 	var rows []db.ListWorkspaceMembersRow
 	for _, m := range f.members {
 		if m.WorkspaceID == wsID {
-			u := f.users.users[m.UserID]
+			u := f.users.users[domain.ID(m.UserID)]
 			rows = append(rows, db.ListWorkspaceMembersRow{UserID: m.UserID, Email: u.Email, Name: u.Name, Role: m.Role, CreatedAt: m.CreatedAt})
 		}
 	}
@@ -85,7 +86,7 @@ func (f *fakeWorkspaceStore) GetWorkspaceMember(_ context.Context, p db.GetWorks
 	if i < 0 {
 		return db.GetWorkspaceMemberRow{}, pgx.ErrNoRows
 	}
-	m, u := f.members[i], f.users.users[p.UserID]
+	m, u := f.members[i], f.users.users[domain.ID(p.UserID)]
 	return db.GetWorkspaceMemberRow{UserID: m.UserID, Email: u.Email, Name: u.Name, Role: m.Role, CreatedAt: m.CreatedAt}, nil
 }
 
@@ -139,7 +140,7 @@ func (f *fakeWorkspaceStore) count(wsID uuid.UUID, role db.WorkspaceRole) int64 
 type wsEnv struct {
 	t      *testing.T
 	router http.Handler
-	tokens *auth.TokenIssuer
+	tokens *token.Issuer
 	users  *fakeStore
 	store  *fakeWorkspaceStore
 	svc    *service.WorkspaceService
@@ -148,14 +149,13 @@ type wsEnv struct {
 func newWSEnv(t *testing.T) *wsEnv {
 	users := newFakeStore()
 	store := newFakeWorkspaceStore(users)
-	tokens := auth.NewTokenIssuer(testSecret, 15*time.Minute)
+	tokens := token.NewIssuer(testSecret, 15*time.Minute)
 	svc := service.NewWorkspaceService(store)
 	return &wsEnv{
 		t: t, tokens: tokens, users: users, store: store, svc: svc,
 		router: NewRouter(Deps{
-			Health:     service.NewHealthService(fakePinger{}),
-			Auth:       service.NewAuthService(users, tokens, time.Hour),
-			Tokens:     tokens,
+			Health:     fakePinger{},
+			Auth:       newAuthService(users, tokens, time.Hour),
 			Workspaces: svc,
 		}),
 	}
@@ -169,9 +169,7 @@ type testUser struct {
 // user creates a user directly in the store (no password hashing) and a token for it.
 func (e *wsEnv) user(name string) testUser {
 	e.t.Helper()
-	u, err := e.users.CreateUser(context.Background(), db.CreateUserParams{
-		Email: strings.ToLower(name) + "@example.com", Name: name, PasswordHash: "x",
-	})
+	u, err := e.users.Create(context.Background(), strings.ToLower(name)+"@example.com", name, "x")
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -179,7 +177,7 @@ func (e *wsEnv) user(name string) testUser {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	return testUser{ID: u.ID, Token: token}
+	return testUser{ID: uuid.UUID(u.ID), Token: token}
 }
 
 func (e *wsEnv) workspace(members map[testUser]db.WorkspaceRole) uuid.UUID {

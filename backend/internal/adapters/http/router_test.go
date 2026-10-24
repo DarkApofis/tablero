@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
-	"github.com/DarkApofis/tablero/backend/internal/service"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 )
 
 type fakePinger struct{ err error }
@@ -18,12 +17,10 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
 func newTestRouter(pingErr error) http.Handler {
-	tokens := auth.NewTokenIssuer(testSecret, 15*time.Minute)
 	return NewRouter(Deps{
 		CORSOrigins: []string{"http://localhost:3000"},
-		Health:      service.NewHealthService(fakePinger{err: pingErr}),
-		Auth:        service.NewAuthService(newFakeStore(), tokens, time.Hour),
-		Tokens:      tokens,
+		Health:      fakePinger{err: pingErr},
+		Auth:        newAuthService(newFakeStore(), token.NewIssuer(testSecret, 15*time.Minute), time.Hour),
 	})
 }
 

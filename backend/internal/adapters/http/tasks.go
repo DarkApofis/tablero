@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
 	"github.com/DarkApofis/tablero/backend/internal/db"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
@@ -48,7 +47,7 @@ func (h *taskHandler) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	userID, _ := auth.UserID(r.Context())
+	userID := uuid.UUID(currentUser(r))
 
 	task, err := h.tasks.Create(r.Context(), service.CreateTaskInput{
 		ColumnID: pathID(r), WorkspaceID: workspaceID(r),
@@ -98,7 +97,7 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	actorID, _ := auth.UserID(r.Context())
+	actorID := uuid.UUID(currentUser(r))
 	task, err := h.tasks.Update(r.Context(), pathID(r), service.UpdateInput{
 		Title: req.Title, Description: req.Description, Priority: req.Priority,
 		DueDate: dueDate, AssigneeID: service.Optional[uuid.UUID](req.AssigneeID),
@@ -131,7 +130,7 @@ func (h *taskHandler) move(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID, _ := auth.UserID(r.Context())
+	actorID := uuid.UUID(currentUser(r))
 	task, err := h.tasks.Move(r.Context(), pathID(r), service.MoveInput{
 		ColumnID: *req.ColumnID, AfterTaskID: req.AfterTaskID, BeforeTaskID: req.BeforeTaskID,
 		Version: *req.Version, ActorID: actorID,

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -8,9 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
-	"github.com/DarkApofis/tablero/backend/internal/db"
-	"github.com/DarkApofis/tablero/backend/internal/service"
+	"github.com/DarkApofis/tablero/backend/internal/app/auth"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 const (
@@ -29,8 +29,8 @@ type userResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func newUserResponse(u db.User) userResponse {
-	return userResponse{ID: u.ID, Email: u.Email, Name: u.Name, CreatedAt: u.CreatedAt}
+func newUserResponse(u domain.User) userResponse {
+	return userResponse{ID: uuid.UUID(u.ID), Email: u.Email, Name: u.Name, CreatedAt: u.CreatedAt}
 }
 
 type sessionResponse struct {
@@ -41,7 +41,7 @@ type sessionResponse struct {
 }
 
 type authHandler struct {
-	auth         *service.AuthService
+	auth         *auth.Service
 	cookieSecure bool
 }
 
@@ -55,15 +55,13 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.auth.Register(r.Context(), service.RegisterInput{
-		Email: req.Email, Name: req.Name, Password: req.Password,
-	})
-	if valErr, ok := errors.AsType[*service.ValidationError](err); ok {
+	session, err := h.auth.Register(r.Context(), req.Email, req.Name, req.Password)
+	if valErr, ok := errors.AsType[*domain.ValidationError](err); ok {
 		WriteValidationError(w, valErr.Fields)
 		return
 	}
 	switch {
-	case errors.Is(err, service.ErrEmailTaken):
+	case errors.Is(err, domain.ErrEmailTaken):
 		WriteError(w, http.StatusConflict, CodeEmailTaken, "Ya existe una cuenta con ese correo")
 		return
 	case err != nil:
@@ -84,7 +82,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 
 	session, err := h.auth.Login(r.Context(), req.Email, req.Password)
 	switch {
-	case errors.Is(err, service.ErrInvalidCredentials):
+	case errors.Is(err, domain.ErrInvalidCredentials):
 		WriteError(w, http.StatusUnauthorized, CodeInvalidCreds, msgInvalidCredentials)
 		return
 	case err != nil:
@@ -95,10 +93,9 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
-	id, _ := auth.UserID(r.Context())
-	user, err := h.auth.Me(r.Context(), id)
+	user, err := h.auth.Me(r.Context(), currentUser(r))
 	switch {
-	case errors.Is(err, service.ErrUserNotFound):
+	case errors.Is(err, domain.ErrUserNotFound):
 		// Valid token for a user that no longer exists.
 		WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "No autenticado")
 		return
@@ -109,7 +106,7 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newUserResponse(user))
 }
 
-func (h *authHandler) writeSession(w http.ResponseWriter, status int, s service.Session) {
+func (h *authHandler) writeSession(w http.ResponseWriter, status int, s auth.Session) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    s.RefreshToken,
@@ -129,9 +126,14 @@ func (h *authHandler) writeSession(w http.ResponseWriter, status int, s service.
 	})
 }
 
+// Authenticator turns a bearer token into a user id; *auth.Service is one.
+type Authenticator interface {
+	Authenticate(token string) (domain.ID, error)
+}
+
 // requireAuth rejects requests without a valid "Authorization: Bearer <jwt>"
 // and stores the user id in the request context for the next handler.
-func requireAuth(tokens *auth.TokenIssuer, next http.Handler) http.Handler {
+func requireAuth(authn Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
 		if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
@@ -140,13 +142,21 @@ func requireAuth(tokens *auth.TokenIssuer, next http.Handler) http.Handler {
 			return
 		}
 
-		userID, err := tokens.Verify(token)
+		userID, err := authn.Authenticate(token)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 			WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "Sesión inválida o expirada")
 			return
 		}
 
-		next.ServeHTTP(w, r.WithContext(auth.WithUserID(r.Context(), userID)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, userID)))
 	})
+}
+
+type userKey struct{}
+
+// currentUser is the authenticated user; only called behind requireAuth.
+func currentUser(r *http.Request) domain.ID {
+	id, _ := r.Context().Value(userKey{}).(domain.ID)
+	return id
 }

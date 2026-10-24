@@ -10,82 +10,79 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/DarkApofis/tablero/backend/internal/auth"
-	"github.com/DarkApofis/tablero/backend/internal/db"
-	"github.com/DarkApofis/tablero/backend/internal/service"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
-var testSecret = []byte("test-secret-test-secret-test-secret!")
-
-// fakeStore is an in-memory service.UserStore that mimics the database's
-// behavior for the cases the handlers care about.
+// fakeStore is an in-memory auth.UserRepository and auth.RefreshTokenRepository
+// that mimics the database's behavior for the cases the handlers care about.
 type fakeStore struct {
-	users   map[uuid.UUID]db.User
-	refresh []db.CreateRefreshTokenParams
+	users   map[domain.ID]domain.User
+	refresh []savedRefresh
+}
+
+type savedRefresh struct {
+	UserID    domain.ID
+	Hash      []byte
+	ExpiresAt time.Time
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{users: map[uuid.UUID]db.User{}}
+	return &fakeStore{users: map[domain.ID]domain.User{}}
 }
 
-func (f *fakeStore) CreateUser(_ context.Context, p db.CreateUserParams) (db.User, error) {
+func (f *fakeStore) Create(_ context.Context, email, name, passwordHash string) (domain.User, error) {
 	for _, u := range f.users {
-		if u.Email == p.Email {
-			return db.User{}, &pgconn.PgError{Code: "23505"}
+		if u.Email == email {
+			return domain.User{}, domain.ErrEmailTaken
 		}
 	}
-	u := db.User{ID: uuid.New(), Email: p.Email, PasswordHash: p.PasswordHash, Name: p.Name, CreatedAt: time.Now()}
+	u := domain.User{ID: domain.NewID(), Email: email, PasswordHash: passwordHash, Name: name, CreatedAt: time.Now()}
 	f.users[u.ID] = u
 	return u, nil
 }
 
-func (f *fakeStore) GetUserByEmail(_ context.Context, email string) (db.User, error) {
+func (f *fakeStore) ByEmail(_ context.Context, email string) (domain.User, error) {
 	for _, u := range f.users {
 		if u.Email == email {
 			return u, nil
 		}
 	}
-	return db.User{}, pgx.ErrNoRows
+	return domain.User{}, domain.ErrUserNotFound
 }
 
-func (f *fakeStore) GetUserByID(_ context.Context, id uuid.UUID) (db.User, error) {
+func (f *fakeStore) ByID(_ context.Context, id domain.ID) (domain.User, error) {
 	u, ok := f.users[id]
 	if !ok {
-		return db.User{}, pgx.ErrNoRows
+		return domain.User{}, domain.ErrUserNotFound
 	}
 	return u, nil
 }
 
-func (f *fakeStore) CreateRefreshToken(_ context.Context, p db.CreateRefreshTokenParams) error {
-	f.refresh = append(f.refresh, p)
+func (f *fakeStore) Save(_ context.Context, userID domain.ID, hash []byte, expiresAt time.Time) error {
+	f.refresh = append(f.refresh, savedRefresh{UserID: userID, Hash: hash, ExpiresAt: expiresAt})
 	return nil
 }
 
 type authEnv struct {
 	router http.Handler
 	store  *fakeStore
-	tokens *auth.TokenIssuer
+	tokens *token.Issuer
 }
 
 func newAuthEnv() authEnv {
 	store := newFakeStore()
-	tokens := auth.NewTokenIssuer(testSecret, 15*time.Minute)
+	tokens := token.NewIssuer(testSecret, 15*time.Minute)
 	return authEnv{
 		store:  store,
 		tokens: tokens,
 		router: NewRouter(Deps{
 			CookieSecure: true,
-			Health:       service.NewHealthService(fakePinger{}),
-			Auth:         service.NewAuthService(store, tokens, 30*24*time.Hour),
-			Tokens:       tokens,
+			Health:       fakePinger{},
+			Auth:         newAuthService(store, tokens, 30*24*time.Hour),
 		}),
 	}
 }
-
 func (e authEnv) do(method, path, body, bearer string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -162,7 +159,7 @@ func TestRegister(t *testing.T) {
 			t.Errorf("token_type = %q, expires_in = %d", s.TokenType, s.ExpiresIn)
 		}
 		id, err := e.tokens.Verify(s.AccessToken)
-		if err != nil || id != s.User.ID {
+		if err != nil || id != domain.ID(s.User.ID) {
 			t.Errorf("Verify = %v, %v; want %v", id, err, s.User.ID)
 		}
 	})
@@ -181,7 +178,7 @@ func TestRegister(t *testing.T) {
 			t.Fatalf("stored refresh tokens = %d, want 1", len(e.store.refresh))
 		}
 		stored := e.store.refresh[0]
-		if !bytes.Equal(stored.TokenHash, auth.HashRefreshToken(cookie.Value)) || stored.UserID != s.User.ID {
+		if !bytes.Equal(stored.Hash, token.HashRefreshToken(cookie.Value)) || stored.UserID != domain.ID(s.User.ID) {
 			t.Errorf("stored = %+v", stored)
 		}
 	})
@@ -271,7 +268,7 @@ func TestLogin(t *testing.T) {
 	if s.User.ID != registered.User.ID {
 		t.Errorf("logged in as %v, want %v", s.User.ID, registered.User.ID)
 	}
-	if id, err := e.tokens.Verify(s.AccessToken); err != nil || id != registered.User.ID {
+	if id, err := e.tokens.Verify(s.AccessToken); err != nil || id != domain.ID(registered.User.ID) {
 		t.Errorf("access token: %v, %v", id, err)
 	}
 }
@@ -331,9 +328,9 @@ func TestMe(t *testing.T) {
 		}
 	})
 
-	expired, _, _ := auth.NewTokenIssuer(testSecret, -time.Minute).Issue(s.User.ID)
-	forged, _, _ := auth.NewTokenIssuer([]byte("another-secret-another-secret-123"), time.Minute).Issue(s.User.ID)
-	unknownUser, _, _ := e.tokens.Issue(uuid.New())
+	expired, _, _ := token.NewIssuer(testSecret, -time.Minute).Issue(domain.ID(s.User.ID))
+	forged, _, _ := token.NewIssuer([]byte("another-secret-another-secret-123"), time.Minute).Issue(domain.ID(s.User.ID))
+	unknownUser, _, _ := e.tokens.Issue(domain.NewID())
 
 	unauthorized := map[string]*http.Request{
 		"no header":         httptest.NewRequest("GET", "/me", nil),
@@ -359,15 +356,15 @@ func TestMe(t *testing.T) {
 }
 
 func TestRequireAuthPutsUserInContext(t *testing.T) {
-	tokens := auth.NewTokenIssuer(testSecret, time.Minute)
-	want := uuid.New()
-	token, _, _ := tokens.Issue(want)
+	tokens := token.NewIssuer(testSecret, time.Minute)
+	want := domain.NewID()
+	access, _, _ := tokens.Issue(want)
 
-	var got uuid.UUID
-	h := requireAuth(tokens, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, _ = auth.UserID(r.Context())
+	var got domain.ID
+	h := requireAuth(newAuthService(newFakeStore(), tokens, time.Hour), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = currentUser(r)
 	}))
-	req := withHeader("Authorization", "bearer "+token) // scheme is case-insensitive
+	req := withHeader("Authorization", "bearer "+access) // scheme is case-insensitive
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	if got != want {

@@ -1,6 +1,5 @@
-// Package auth holds the authentication primitives: password hashing,
-// access tokens (JWT), refresh tokens and the authenticated user in context.
-package auth
+// Package hasher implements auth.PasswordHasher with argon2id.
+package hasher
 
 import (
 	"crypto/rand"
@@ -24,9 +23,12 @@ const (
 
 var errInvalidHash = errors.New("invalid password hash format")
 
-// HashPassword returns an argon2id hash in PHC string format:
+// Argon2id hashes passwords in PHC string format.
+type Argon2id struct{}
+
+// Hash returns an argon2id hash in PHC string format:
 // $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>
-func HashPassword(password string) (string, error) {
+func (Argon2id) Hash(password string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
@@ -39,9 +41,9 @@ func HashPassword(password string) (string, error) {
 	), nil
 }
 
-// VerifyPassword reports whether password matches encoded. The parameters are
-// read from the hash, so hashes stay valid if the defaults change.
-func VerifyPassword(password, encoded string) (bool, error) {
+// Verify reports whether password matches encoded. The parameters are read
+// from the hash, so hashes stay valid if the defaults change.
+func (Argon2id) Verify(password, encoded string) (bool, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false, errInvalidHash

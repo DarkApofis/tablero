@@ -19,8 +19,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -28,7 +30,7 @@ type dbEnv struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
 	q      *db.Queries
-	tokens *auth.TokenIssuer
+	tokens *token.Issuer
 	boards *service.BoardService
 	tasks  *service.TaskService
 	router http.Handler
@@ -42,14 +44,14 @@ func newDBEnv(t *testing.T) *dbEnv {
 	}
 	t.Cleanup(pool.Close)
 
-	tokens := auth.NewTokenIssuer(testSecret, 15*time.Minute)
+	tokens := token.NewIssuer(testSecret, 15*time.Minute)
 	boards := service.NewBoardService(pool)
 	tasks := service.NewTaskService(pool)
 	return &dbEnv{
 		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks,
 		router: NewRouter(Deps{
-			Health:     service.NewHealthService(pool),
-			Tokens:     tokens,
+			Health:     pool,
+			Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
 			Workspaces: service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 			Boards:     boards,
 			Tasks:      tasks,
@@ -76,8 +78,8 @@ func (e *dbEnv) user(name string) testUser {
 		e.t.Fatal(err)
 	}
 	e.t.Cleanup(func() { _, _ = e.pool.Exec(context.Background(), "DELETE FROM users WHERE id = $1", u.ID) })
-	token, _, _ := e.tokens.Issue(u.ID)
-	return testUser{ID: u.ID, Token: token}
+	access, _, _ := e.tokens.Issue(domain.ID(u.ID))
+	return testUser{ID: u.ID, Token: access}
 }
 
 // workspace inserts a workspace (deleted, with its boards, when the test ends).

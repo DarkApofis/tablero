@@ -50,7 +50,7 @@ func (h *workspaceHandler) create(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	userID, _ := auth.UserID(r.Context())
+	userID := uuid.UUID(currentUser(r))
 
 	ws, err := h.ws.Create(r.Context(), userID, req.Name)
 	if err != nil {
@@ -61,7 +61,7 @@ func (h *workspaceHandler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *workspaceHandler) list(w http.ResponseWriter, r *http.Request) {
-	userID, _ := auth.UserID(r.Context())
+	userID := uuid.UUID(currentUser(r))
 
 	rows, err := h.ws.ListForUser(r.Context(), userID)
 	if err != nil {
@@ -99,7 +99,7 @@ func (h *workspaceHandler) changeRole(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	actorID, _ := auth.UserID(r.Context())
+	actorID := uuid.UUID(currentUser(r))
 
 	m, err := h.ws.ChangeRole(r.Context(), workspaceID(r), actorID, targetID, req.Role)
 	if err != nil {
@@ -114,7 +114,7 @@ func (h *workspaceHandler) removeMember(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	actorID, _ := auth.UserID(r.Context())
+	actorID := uuid.UUID(currentUser(r))
 
 	if err := h.ws.RemoveMember(r.Context(), workspaceID(r), actorID, targetID); err != nil {
 		writeWorkspaceError(w, r, "remove member", err)
@@ -156,7 +156,7 @@ func requireAccess(ws *service.WorkspaceService, action auth.Action, resolve wor
 			internalError(w, r, "resolve workspace", err)
 			return
 		}
-		userID, _ := auth.UserID(r.Context())
+		userID := uuid.UUID(currentUser(r))
 
 		role, err := ws.Authorize(r.Context(), wsID, userID, action)
 		if err != nil {

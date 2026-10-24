@@ -26,7 +26,7 @@ func TestOpenAPIMatchesRouter(t *testing.T) {
 		t.Fatalf("found only %d routes in router.go; did the registration style change?", len(routes))
 	}
 
-	raw, err := os.ReadFile("../../../docs/openapi.yaml")
+	raw, err := os.ReadFile("../../../../docs/openapi.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
