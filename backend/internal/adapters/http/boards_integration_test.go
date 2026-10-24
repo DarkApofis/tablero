@@ -22,6 +22,7 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
+	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/db"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
@@ -33,7 +34,7 @@ type dbEnv struct {
 	pool   *pgxpool.Pool
 	q      *db.Queries
 	tokens *token.Issuer
-	boards *service.BoardService
+	boards *board.Service
 	tasks  *service.TaskService
 	router http.Handler
 }
@@ -47,7 +48,8 @@ func newDBEnv(t *testing.T) *dbEnv {
 	t.Cleanup(pool.Close)
 
 	tokens := token.NewIssuer(testSecret, 15*time.Minute)
-	boards := service.NewBoardService(pool)
+	txm := postgres.NewTxManager(pool)
+	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), txm)
 	tasks := service.NewTaskService(pool)
 	return &dbEnv{
 		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks,
@@ -55,14 +57,18 @@ func newDBEnv(t *testing.T) *dbEnv {
 			Health:     pool,
 			Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
 			Authorizer: workspace.NewAuthorizer(postgres.NewWorkspaces(pool)),
-			Workspaces: workspace.NewService(postgres.NewWorkspaces(pool), postgres.NewTxManager(pool), events.Noop{}),
+			Workspaces: workspace.NewService(postgres.NewWorkspaces(pool), txm, events.Noop{}),
 			Boards:     boards,
 			Tasks:      tasks,
-			Labels:     service.NewLabelService(pool),
-			Activity:   service.NewActivityService(pool),
+			Labels:     board.NewLabelService(postgres.NewLabels(pool)),
+			Activity:   board.NewActivityService(postgres.NewActivity(pool)),
 		}),
 	}
 }
+
+// fixtureAccess is what fixtures use to call use cases directly, bypassing
+// HTTP and its authorization: an admin of whatever workspace.
+var fixtureAccess = domain.Access{Role: domain.RoleAdmin}
 
 func (e *dbEnv) exec(sql string, args ...any) {
 	e.t.Helper()
@@ -114,11 +120,11 @@ func (e *dbEnv) board(wsID uuid.UUID, name string) uuid.UUID {
 // column appends a column through the service, like the API does.
 func (e *dbEnv) column(boardID uuid.UUID, name string) uuid.UUID {
 	e.t.Helper()
-	c, err := e.boards.CreateColumn(context.Background(), boardID, name)
+	c, err := e.boards.CreateColumn(context.Background(), fixtureAccess, domain.ID(boardID), name)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	return c.ID
+	return uuid.UUID(c.ID)
 }
 
 // task inserts a task at an explicit position.
@@ -599,7 +605,8 @@ func TestConcurrentColumnMovesKeepDistinctPositions(t *testing.T) {
 	errs := make(chan error, len(movers))
 	for _, id := range movers {
 		wg.Go(func() {
-			if _, err := e.boards.MoveColumn(context.Background(), id, &first); err != nil {
+			after := domain.ID(first)
+			if _, err := e.boards.MoveColumn(context.Background(), fixtureAccess, domain.ID(id), &after); err != nil {
 				errs <- err
 			}
 		})

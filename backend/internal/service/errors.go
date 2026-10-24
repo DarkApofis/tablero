@@ -7,7 +7,7 @@ import "github.com/DarkApofis/tablero/backend/internal/domain"
 // ValidationError is the domain's, so the HTTP adapter handles both layers alike.
 type ValidationError = domain.ValidationError
 
-const pgUniqueViolation = "23505"
-
 // ErrNotMember is the domain's: resolvers report missing resources with it.
 var ErrNotMember = domain.ErrNotMember
+
+var ErrColumnNotFound = domain.ErrColumnNotFound

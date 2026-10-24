@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/DarkApofis/tablero/backend/internal/db"
-	"github.com/DarkApofis/tablero/backend/internal/position"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 const (
@@ -168,7 +168,7 @@ func (s *TaskService) Create(ctx context.Context, in CreateTaskInput) (TaskDetai
 		if err != nil {
 			return fmt.Errorf("last task position: %w", err)
 		}
-		pos, _ := position.Between(last, nil) // appending always has room
+		pos, _ := domain.PositionBetween(last, nil) // appending always has room
 		created, err := q.CreateTask(ctx, db.CreateTaskParams{
 			ColumnID: in.ColumnID, Title: fields.Title, Description: fields.Description, Position: pos,
 			CreatedBy: uuid.NullUUID{UUID: in.CreatedBy, Valid: true},
@@ -370,7 +370,7 @@ func (s *TaskService) Move(ctx context.Context, taskID uuid.UUID, in MoveInput) 
 			if err != nil {
 				return err
 			}
-			if pos, ok := position.Between(prev, next); ok {
+			if pos, ok := domain.PositionBetween(prev, next); ok {
 				moved, err := q.MoveTask(ctx, db.MoveTaskParams{
 					ID: taskID, Version: in.Version, ColumnID: target.ID, Position: pos,
 				})

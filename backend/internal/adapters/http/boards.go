@@ -10,9 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 type boardResponse struct {
@@ -22,8 +21,8 @@ type boardResponse struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func newBoardResponse(b db.Board) boardResponse {
-	return boardResponse{ID: b.ID, WorkspaceID: b.WorkspaceID, Name: b.Name, CreatedAt: b.CreatedAt}
+func newBoardResponse(b domain.Board) boardResponse {
+	return boardResponse{ID: uuid.UUID(b.ID), WorkspaceID: uuid.UUID(b.WorkspaceID), Name: b.Name, CreatedAt: b.CreatedAt}
 }
 
 type columnResponse struct {
@@ -34,8 +33,8 @@ type columnResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func newColumnResponse(c db.Column) columnResponse {
-	return columnResponse{ID: c.ID, BoardID: c.BoardID, Name: c.Name, Position: c.Position, CreatedAt: c.CreatedAt}
+func newColumnResponse(c domain.Column) columnResponse {
+	return columnResponse{ID: uuid.UUID(c.ID), BoardID: uuid.UUID(c.BoardID), Name: c.Name, Position: c.Position, CreatedAt: c.CreatedAt}
 }
 
 type taskResponse struct {
@@ -45,7 +44,7 @@ type taskResponse struct {
 	Description string          `json:"description"`
 	Position    float64         `json:"position"`
 	Version     int32           `json:"version"`
-	Priority    db.TaskPriority `json:"priority"`
+	Priority    domain.Priority `json:"priority"`
 	DueDate     *string         `json:"due_date"` // YYYY-MM-DD
 	Assignee    *userRef        `json:"assignee"`
 	Labels      []labelResponse `json:"labels"`
@@ -55,24 +54,31 @@ type taskResponse struct {
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
-func newTaskResponse(t service.TaskDetail) taskResponse {
+func newTaskResponse(t domain.TaskDetail) taskResponse {
 	resp := taskResponse{
-		ID: t.ID, ColumnID: t.ColumnID, Title: t.Title, Description: t.Description,
+		ID: uuid.UUID(t.ID), ColumnID: uuid.UUID(t.ColumnID), Title: t.Title, Description: t.Description,
 		Position: t.Position, Version: t.Version, Priority: t.Priority,
 		Labels: make([]labelResponse, 0, len(t.Labels)), ArchivedAt: t.ArchivedAt,
-		CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		CreatedBy: nullUUID(t.CreatedBy), CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
 	if t.DueDate != nil {
-		d := t.DueDate.Format(service.DateLayout)
+		d := t.DueDate.Format(domain.DateLayout)
 		resp.DueDate = &d
 	}
-	if t.AssigneeID.Valid {
-		resp.Assignee = &userRef{ID: t.AssigneeID.UUID, Name: t.AssigneeName}
+	if t.AssigneeID != nil {
+		resp.Assignee = &userRef{ID: uuid.UUID(*t.AssigneeID), Name: t.AssigneeName}
 	}
 	for _, l := range t.Labels {
 		resp.Labels = append(resp.Labels, newLabelResponse(l))
 	}
 	return resp
+}
+
+func nullUUID(id *domain.ID) uuid.NullUUID {
+	if id == nil {
+		return uuid.NullUUID{}
+	}
+	return uuid.NullUUID{UUID: uuid.UUID(*id), Valid: true}
 }
 
 type boardDetailResponse struct {
@@ -90,7 +96,7 @@ type columnWithTasksResponse struct {
 }
 
 type boardHandler struct {
-	boards *service.BoardService
+	boards *board.Service
 }
 
 // boardWorkspace and columnWorkspace resolve /boards/{id} and /columns/{id}
@@ -100,8 +106,7 @@ func (h *boardHandler) boardWorkspace(r *http.Request) (domain.ID, error) {
 	if err != nil {
 		return domain.NilID, err
 	}
-	ws, err := h.boards.WorkspaceOfBoard(r.Context(), uuid.UUID(id))
-	return domain.ID(ws), err
+	return h.boards.WorkspaceOfBoard(r.Context(), id)
 }
 
 func (h *boardHandler) columnWorkspace(r *http.Request) (domain.ID, error) {
@@ -109,13 +114,12 @@ func (h *boardHandler) columnWorkspace(r *http.Request) (domain.ID, error) {
 	if err != nil {
 		return domain.NilID, err
 	}
-	ws, err := h.boards.WorkspaceOfColumn(r.Context(), uuid.UUID(id))
-	return domain.ID(ws), err
+	return h.boards.WorkspaceOfColumn(r.Context(), id)
 }
 
 // pathID is only called behind requireAccess, which already parsed {id}.
-func pathID(r *http.Request) uuid.UUID {
-	return uuid.MustParse(r.PathValue("id"))
+func pathID(r *http.Request) domain.ID {
+	return domain.ID(uuid.MustParse(r.PathValue("id")))
 }
 
 type nameRequest struct {
@@ -125,9 +129,9 @@ type nameRequest struct {
 // --- boards ---
 
 func (h *boardHandler) listBoards(w http.ResponseWriter, r *http.Request) {
-	boards, err := h.boards.ListBoards(r.Context(), workspaceID(r))
+	boards, err := h.boards.ListBoards(r.Context(), access(r))
 	if err != nil {
-		internalError(w, r, "list boards", err)
+		writeBoardError(w, r, "list boards", err)
 		return
 	}
 	out := make([]boardResponse, 0, len(boards))
@@ -142,12 +146,12 @@ func (h *boardHandler) createBoard(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	board, err := h.boards.CreateBoard(r.Context(), workspaceID(r), req.Name)
+	b, err := h.boards.CreateBoard(r.Context(), access(r), req.Name)
 	if err != nil {
 		writeBoardError(w, r, "create board", err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, newBoardResponse(board))
+	WriteJSON(w, http.StatusCreated, newBoardResponse(b))
 }
 
 // getBoard: GET /boards/{id}[?include_archived=true]. Archived tasks are left
@@ -163,16 +167,16 @@ func (h *boardHandler) getBoard(w http.ResponseWriter, r *http.Request) {
 		includeArchived = b
 	}
 
-	detail, err := h.boards.GetBoardDetail(r.Context(), pathID(r), includeArchived)
+	acc := access(r)
+	detail, err := h.boards.GetBoardDetail(r.Context(), acc, pathID(r), includeArchived)
 	if err != nil {
 		writeBoardError(w, r, "get board", err)
 		return
 	}
-	role := access(r).Role
 
 	resp := boardDetailResponse{
 		boardResponse: newBoardResponse(detail.Board),
-		Role:          role,
+		Role:          acc.Role,
 		Labels:        make([]labelResponse, 0, len(detail.Labels)),
 		Columns:       make([]columnWithTasksResponse, 0, len(detail.Columns)),
 	}
@@ -194,16 +198,16 @@ func (h *boardHandler) renameBoard(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	board, err := h.boards.RenameBoard(r.Context(), pathID(r), req.Name)
+	b, err := h.boards.RenameBoard(r.Context(), access(r), pathID(r), req.Name)
 	if err != nil {
 		writeBoardError(w, r, "rename board", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newBoardResponse(board))
+	WriteJSON(w, http.StatusOK, newBoardResponse(b))
 }
 
 func (h *boardHandler) deleteBoard(w http.ResponseWriter, r *http.Request) {
-	if err := h.boards.DeleteBoard(r.Context(), pathID(r)); err != nil {
+	if err := h.boards.DeleteBoard(r.Context(), access(r), pathID(r)); err != nil {
 		writeBoardError(w, r, "delete board", err)
 		return
 	}
@@ -217,7 +221,7 @@ func (h *boardHandler) createColumn(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	col, err := h.boards.CreateColumn(r.Context(), pathID(r), req.Name)
+	col, err := h.boards.CreateColumn(r.Context(), access(r), pathID(r), req.Name)
 	if err != nil {
 		writeBoardError(w, r, "create column", err)
 		return
@@ -230,7 +234,7 @@ func (h *boardHandler) renameColumn(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	col, err := h.boards.RenameColumn(r.Context(), pathID(r), req.Name)
+	col, err := h.boards.RenameColumn(r.Context(), access(r), pathID(r), req.Name)
 	if err != nil {
 		writeBoardError(w, r, "rename column", err)
 		return
@@ -239,7 +243,7 @@ func (h *boardHandler) renameColumn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *boardHandler) deleteColumn(w http.ResponseWriter, r *http.Request) {
-	if err := h.boards.DeleteColumn(r.Context(), pathID(r)); err != nil {
+	if err := h.boards.DeleteColumn(r.Context(), access(r), pathID(r)); err != nil {
 		writeBoardError(w, r, "delete column", err)
 		return
 	}
@@ -248,7 +252,10 @@ func (h *boardHandler) deleteColumn(w http.ResponseWriter, r *http.Request) {
 
 // optional distinguishes a missing key (Set false) from an explicit null
 // (Set with a nil Value).
-type optional[T any] service.Optional[T]
+type optional[T any] struct {
+	Set   bool
+	Value *T
+}
 
 func (o *optional[T]) UnmarshalJSON(b []byte) error {
 	o.Set = true
@@ -277,7 +284,12 @@ func (h *boardHandler) moveColumn(w http.ResponseWriter, r *http.Request) {
 		WriteValidationError(w, map[string]string{"after_id": "Indica after_id (null para mover al inicio)"})
 		return
 	}
-	col, err := h.boards.MoveColumn(r.Context(), pathID(r), req.AfterID.Value)
+	var afterID *domain.ID
+	if req.AfterID.Value != nil {
+		id := domain.ID(*req.AfterID.Value)
+		afterID = &id
+	}
+	col, err := h.boards.MoveColumn(r.Context(), access(r), pathID(r), afterID)
 	if err != nil {
 		writeBoardError(w, r, "move column", err)
 		return
@@ -286,15 +298,17 @@ func (h *boardHandler) moveColumn(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeBoardError(w http.ResponseWriter, r *http.Request, op string, err error) {
-	if valErr, ok := errors.AsType[*service.ValidationError](err); ok {
+	if valErr, ok := errors.AsType[*domain.ValidationError](err); ok {
 		WriteValidationError(w, valErr.Fields)
 		return
 	}
 	switch {
+	case errors.Is(err, domain.ErrNotMember), errors.Is(err, domain.ErrForbidden):
+		writeWorkspaceError(w, r, op, err)
 	// Only reachable if the resource was deleted after authorization.
-	case errors.Is(err, service.ErrBoardNotFound):
+	case errors.Is(err, domain.ErrBoardNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "El tablero no existe")
-	case errors.Is(err, service.ErrColumnNotFound):
+	case errors.Is(err, domain.ErrColumnNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "La columna no existe")
 	default:
 		internalError(w, r, op, err)

@@ -20,7 +20,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
+	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -502,12 +505,12 @@ func TestGetBoardQueryCountDoesNotGrowWithTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	boards := service.NewBoardService(pool)
+	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), postgres.NewTxManager(pool))
 
 	queries := func() int64 {
 		t.Helper()
 		before := counter.n.Load()
-		if _, err := boards.GetBoardDetail(context.Background(), f.board, true); err != nil {
+		if _, err := boards.GetBoardDetail(context.Background(), fixtureAccess, domain.ID(f.board), true); err != nil {
 			t.Fatal(err)
 		}
 		return counter.n.Load() - before

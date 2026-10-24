@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	appauth "github.com/DarkApofis/tablero/backend/internal/app/auth"
+	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
@@ -16,10 +17,10 @@ type Deps struct {
 	Auth         *appauth.Service
 	Authorizer   *workspace.Authorizer
 	Workspaces   *workspace.Service
-	Boards       *service.BoardService
+	Boards       *board.Service
 	Tasks        *service.TaskService
-	Labels       *service.LabelService
-	Activity     *service.ActivityService
+	Labels       *board.LabelService
+	Activity     *board.ActivityService
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:

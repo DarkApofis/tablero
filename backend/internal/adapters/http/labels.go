@@ -7,9 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 type labelResponse struct {
@@ -20,12 +19,12 @@ type labelResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func newLabelResponse(l db.Label) labelResponse {
-	return labelResponse{ID: l.ID, BoardID: l.BoardID, Name: l.Name, Color: l.Color, CreatedAt: l.CreatedAt}
+func newLabelResponse(l domain.Label) labelResponse {
+	return labelResponse{ID: uuid.UUID(l.ID), BoardID: uuid.UUID(l.BoardID), Name: l.Name, Color: l.Color, CreatedAt: l.CreatedAt}
 }
 
 type labelHandler struct {
-	labels *service.LabelService
+	labels *board.LabelService
 }
 
 // labelWorkspace resolves /labels/{id} to its workspace for requireAccess.
@@ -34,15 +33,14 @@ func (h *labelHandler) labelWorkspace(r *http.Request) (domain.ID, error) {
 	if err != nil {
 		return domain.NilID, err
 	}
-	ws, err := h.labels.WorkspaceOfLabel(r.Context(), uuid.UUID(id))
-	return domain.ID(ws), err
+	return h.labels.WorkspaceOfLabel(r.Context(), id)
 }
 
 // list: GET /boards/{id}/labels, ordered by name.
 func (h *labelHandler) list(w http.ResponseWriter, r *http.Request) {
-	labels, err := h.labels.List(r.Context(), pathID(r))
+	labels, err := h.labels.List(r.Context(), access(r), pathID(r))
 	if err != nil {
-		internalError(w, r, "list labels", err)
+		writeLabelError(w, r, "list labels", err)
 		return
 	}
 	out := make([]labelResponse, 0, len(labels))
@@ -61,7 +59,7 @@ func (h *labelHandler) create(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	label, err := h.labels.Create(r.Context(), pathID(r), req.Name, req.Color)
+	label, err := h.labels.Create(r.Context(), access(r), pathID(r), req.Name, req.Color)
 	if err != nil {
 		writeLabelError(w, r, "create label", err)
 		return
@@ -78,7 +76,7 @@ func (h *labelHandler) update(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	label, err := h.labels.Update(r.Context(), pathID(r), req.Name, req.Color)
+	label, err := h.labels.Update(r.Context(), access(r), pathID(r), req.Name, req.Color)
 	if err != nil {
 		writeLabelError(w, r, "update label", err)
 		return
@@ -87,7 +85,7 @@ func (h *labelHandler) update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *labelHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.labels.Delete(r.Context(), pathID(r)); err != nil {
+	if err := h.labels.Delete(r.Context(), access(r), pathID(r)); err != nil {
 		writeLabelError(w, r, "delete label", err)
 		return
 	}
@@ -96,10 +94,10 @@ func (h *labelHandler) delete(w http.ResponseWriter, r *http.Request) {
 
 func writeLabelError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	switch {
-	case errors.Is(err, service.ErrLabelNameTaken):
+	case errors.Is(err, domain.ErrLabelNameTaken):
 		WriteError(w, http.StatusConflict, CodeLabelExists, "Ya existe una etiqueta con ese nombre en este tablero")
 	// Only reachable if the resource was deleted after authorization.
-	case errors.Is(err, service.ErrLabelNotFound):
+	case errors.Is(err, domain.ErrLabelNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "La etiqueta no existe")
 	default:
 		writeBoardError(w, r, op, err) // validation errors, missing board and 500s

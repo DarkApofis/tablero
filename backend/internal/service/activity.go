@@ -2,15 +2,10 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math"
-	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/DarkApofis/tablero/backend/internal/db"
 )
@@ -88,72 +83,4 @@ func logActivity(ctx context.Context, q *db.Queries, columnID, actorID uuid.UUID
 		return fmt.Errorf("activity: insert: %w", err)
 	}
 	return nil
-}
-
-// --- reading ---
-
-const (
-	DefaultActivityLimit = 50
-	MaxActivityLimit     = 100
-)
-
-var ErrInvalidCursor = errors.New("invalid cursor")
-
-type ActivityService struct {
-	q *db.Queries
-}
-
-func NewActivityService(pool *pgxpool.Pool) *ActivityService {
-	return &ActivityService{q: db.New(pool)}
-}
-
-type ActivityPage struct {
-	Items []db.ListBoardActivityRow
-	// NextCursor fetches the next (older) page; empty when this is the last one.
-	NextCursor string
-}
-
-// ListBoard returns a page of a board's activity, newest first. cursor is
-// empty for the first page or a NextCursor from a previous page.
-func (s *ActivityService) ListBoard(ctx context.Context, boardID uuid.UUID, cursor string, limit int) (ActivityPage, error) {
-	before := int64(math.MaxInt64)
-	if cursor != "" {
-		id, err := decodeCursor(cursor)
-		if err != nil {
-			return ActivityPage{}, err
-		}
-		before = id
-	}
-
-	// One extra row tells us whether there is a next page without a COUNT.
-	rows, err := s.q.ListBoardActivity(ctx, db.ListBoardActivityParams{
-		BoardID: boardID, BeforeID: before, RowLimit: int32(limit + 1),
-	})
-	if err != nil {
-		return ActivityPage{}, err
-	}
-
-	page := ActivityPage{Items: rows}
-	if len(rows) > limit {
-		page.Items = rows[:limit]
-		page.NextCursor = encodeCursor(page.Items[limit-1].ID)
-	}
-	return page, nil
-}
-
-// Cursors are opaque to clients: base64url of the last id they saw.
-func encodeCursor(id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(id, 10)))
-}
-
-func decodeCursor(c string) (int64, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(c)
-	if err != nil {
-		return 0, ErrInvalidCursor
-	}
-	id, err := strconv.ParseInt(string(raw), 10, 64)
-	if err != nil || id <= 0 {
-		return 0, ErrInvalidCursor
-	}
-	return id, nil
 }

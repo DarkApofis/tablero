@@ -16,6 +16,7 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/app/auth"
+	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
 	"github.com/DarkApofis/tablero/backend/internal/service"
@@ -61,6 +62,8 @@ func run() error {
 
 	users := postgres.NewUsers(pool)
 	workspaces := postgres.NewWorkspaces(pool)
+	boards := postgres.NewBoards(pool)
+	labels := postgres.NewLabels(pool)
 	authService, err := auth.NewService(users, users, hasher.Argon2id{},
 		token.NewIssuer(cfg.JWTSecret, cfg.AccessTokenTTL), systemClock{}, cfg.RefreshTokenTTL)
 	if err != nil {
@@ -76,10 +79,10 @@ func run() error {
 			Auth:         authService,
 			Authorizer:   workspace.NewAuthorizer(workspaces),
 			Workspaces:   workspace.NewService(workspaces, tx, publisher),
-			Boards:       service.NewBoardService(pool),
+			Boards:       board.NewService(boards, labels, tx),
 			Tasks:        service.NewTaskService(pool),
-			Labels:       service.NewLabelService(pool),
-			Activity:     service.NewActivityService(pool),
+			Labels:       board.NewLabelService(labels),
+			Activity:     board.NewActivityService(postgres.NewActivity(pool)),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

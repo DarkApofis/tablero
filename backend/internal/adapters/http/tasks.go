@@ -52,7 +52,7 @@ func (h *taskHandler) create(w http.ResponseWriter, r *http.Request) {
 	userID := uuid.UUID(currentUser(r))
 
 	task, err := h.tasks.Create(r.Context(), service.CreateTaskInput{
-		ColumnID: pathID(r), WorkspaceID: workspaceID(r),
+		ColumnID: uuid.UUID(pathID(r)), WorkspaceID: workspaceID(r),
 		Title: req.Title, Description: req.Description, Priority: req.Priority,
 		DueDate: dueDate, AssigneeID: req.AssigneeID, LabelIDs: req.LabelIDs, CreatedBy: userID,
 	})
@@ -60,16 +60,16 @@ func (h *taskHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeTaskError(w, r, "create task", err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, newTaskResponse(task))
+	WriteJSON(w, http.StatusCreated, newTaskResponse(fromServiceTask(task)))
 }
 
 func (h *taskHandler) get(w http.ResponseWriter, r *http.Request) {
-	task, err := h.tasks.Get(r.Context(), pathID(r))
+	task, err := h.tasks.Get(r.Context(), uuid.UUID(pathID(r)))
 	if err != nil {
 		writeTaskError(w, r, "get task", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newTaskResponse(task))
+	WriteJSON(w, http.StatusOK, newTaskResponse(fromServiceTask(task)))
 }
 
 // update: PATCH /tasks/{id} with any of the editable fields and "version".
@@ -100,7 +100,7 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actorID := uuid.UUID(currentUser(r))
-	task, err := h.tasks.Update(r.Context(), pathID(r), service.UpdateInput{
+	task, err := h.tasks.Update(r.Context(), uuid.UUID(pathID(r)), service.UpdateInput{
 		Title: req.Title, Description: req.Description, Priority: req.Priority,
 		DueDate: dueDate, AssigneeID: service.Optional[uuid.UUID](req.AssigneeID),
 		LabelIDs: req.LabelIDs, Archived: req.Archived,
@@ -110,7 +110,7 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 		writeTaskError(w, r, "update task", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newTaskResponse(task))
+	WriteJSON(w, http.StatusOK, newTaskResponse(fromServiceTask(task)))
 }
 
 // move: PATCH /tasks/{id}/move with {"columnId", "afterTaskId"?, "beforeTaskId"?, "version"}.
@@ -133,7 +133,7 @@ func (h *taskHandler) move(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actorID := uuid.UUID(currentUser(r))
-	task, err := h.tasks.Move(r.Context(), pathID(r), service.MoveInput{
+	task, err := h.tasks.Move(r.Context(), uuid.UUID(pathID(r)), service.MoveInput{
 		ColumnID: *req.ColumnID, AfterTaskID: req.AfterTaskID, BeforeTaskID: req.BeforeTaskID,
 		Version: *req.Version, ActorID: actorID,
 	})
@@ -141,11 +141,11 @@ func (h *taskHandler) move(w http.ResponseWriter, r *http.Request) {
 		writeTaskError(w, r, "move task", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newTaskResponse(task))
+	WriteJSON(w, http.StatusOK, newTaskResponse(fromServiceTask(task)))
 }
 
 func (h *taskHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.tasks.Delete(r.Context(), pathID(r)); err != nil {
+	if err := h.tasks.Delete(r.Context(), uuid.UUID(pathID(r))); err != nil {
 		writeTaskError(w, r, "delete task", err)
 		return
 	}
@@ -180,7 +180,7 @@ func writeTaskError(w http.ResponseWriter, r *http.Request, op string, err error
 		if conflict.Reason == service.ConflictNeighbors {
 			detail = errorDetail{Code: CodeNeighborsChanged, Message: "Las tareas vecinas cambiaron de lugar; recarga la columna"}
 		}
-		WriteJSON(w, http.StatusConflict, conflictResponse{Error: detail, Current: newTaskResponse(conflict.Current)})
+		WriteJSON(w, http.StatusConflict, conflictResponse{Error: detail, Current: newTaskResponse(fromServiceTask(conflict.Current))})
 		return
 	}
 	switch {
@@ -191,5 +191,32 @@ func writeTaskError(w http.ResponseWriter, r *http.Request, op string, err error
 		WriteError(w, http.StatusNotFound, CodeNotFound, "La columna no existe")
 	default:
 		writeBoardError(w, r, op, err) // validation errors and 500s
+	}
+}
+
+// fromServiceTask maps the task service's rows to the domain entity the
+// responses are built from. Temporary: it goes away when the task use cases
+// move to internal/app.
+func fromServiceTask(t service.TaskDetail) domain.TaskDetail {
+	opt := func(id uuid.NullUUID) *domain.ID {
+		if !id.Valid {
+			return nil
+		}
+		d := domain.ID(id.UUID)
+		return &d
+	}
+	labels := make([]domain.Label, len(t.Labels))
+	for i, l := range t.Labels {
+		labels[i] = domain.Label{ID: domain.ID(l.ID), BoardID: domain.ID(l.BoardID), Name: l.Name, Color: l.Color, CreatedAt: l.CreatedAt}
+	}
+	return domain.TaskDetail{
+		Task: domain.Task{
+			ID: domain.ID(t.ID), ColumnID: domain.ID(t.ColumnID), Title: t.Title, Description: t.Description,
+			Position: t.Position, Version: t.Version, Priority: domain.Priority(t.Priority),
+			DueDate: t.DueDate, AssigneeID: opt(t.AssigneeID), ArchivedAt: t.ArchivedAt,
+			CreatedBy: opt(t.CreatedBy), CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		},
+		AssigneeName: t.AssigneeName,
+		Labels:       labels,
 	}
 }

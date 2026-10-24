@@ -14,6 +14,18 @@ var (
 	ErrUserNotFound = fmt.Errorf("user %w", ErrNotFound)
 	// ErrMemberNotFound: the target user of a membership change is not a member.
 	ErrMemberNotFound = fmt.Errorf("member %w", ErrNotFound)
+	// Board, column, task and label "not found" only surface when the resource
+	// is deleted between authorization and the operation: before that, a
+	// missing resource is ErrNotMember.
+	ErrBoardNotFound  = fmt.Errorf("board %w", ErrNotFound)
+	ErrColumnNotFound = fmt.Errorf("column %w", ErrNotFound)
+	ErrTaskNotFound   = fmt.Errorf("task %w", ErrNotFound)
+	ErrLabelNotFound  = fmt.Errorf("label %w", ErrNotFound)
+
+	// ErrLabelNameTaken: the board already has a label with that name.
+	ErrLabelNameTaken = errors.New("label name taken")
+	// ErrInvalidCursor: a pagination cursor that this API did not hand out.
+	ErrInvalidCursor = errors.New("invalid cursor")
 
 	// ErrNotMember: the user does not belong to the workspace, or the resource
 	// (workspace, board, column, task, label) does not exist. Callers must not

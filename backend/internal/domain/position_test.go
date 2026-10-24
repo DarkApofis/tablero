@@ -1,4 +1,4 @@
-package position
+package domain
 
 import (
 	"math"
@@ -7,16 +7,16 @@ import (
 
 func p(v float64) *float64 { return new(v) }
 
-func TestBetween(t *testing.T) {
+func TestPositionBetween(t *testing.T) {
 	tests := []struct {
 		name       string
 		prev, next *float64
 		want       float64
 		wantOK     bool
 	}{
-		{"empty list", nil, nil, Step, true},
+		{"empty list", nil, nil, PositionStep, true},
 		{"at start", nil, p(1024), 0, true},
-		{"at start, negative is fine", nil, p(-5), -5 - Step, true},
+		{"at start, negative is fine", nil, p(-5), -5 - PositionStep, true},
 		{"at end", p(2048), nil, 3072, true},
 		{"midpoint", p(1024), p(2048), 1536, true},
 		{"midpoint of fractions", p(1), p(1.5), 1.25, true},
@@ -26,9 +26,9 @@ func TestBetween(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := Between(tt.prev, tt.next)
+			got, ok := PositionBetween(tt.prev, tt.next)
 			if ok != tt.wantOK || (ok && got != tt.want) {
-				t.Errorf("Between = %v, %v; want %v, %v", got, ok, tt.want, tt.wantOK)
+				t.Errorf("PositionBetween = %v, %v; want %v, %v", got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
@@ -36,10 +36,10 @@ func TestBetween(t *testing.T) {
 
 // Repeatedly inserting into the same gap must eventually ask for a rebalance
 // instead of returning a position equal to a neighbor.
-func TestBetweenRunsOutThenAsksForRebalance(t *testing.T) {
+func TestPositionBetweenRunsOutThenAsksForRebalance(t *testing.T) {
 	lo, hi := 1024.0, 2048.0
 	for i := range 200 {
-		mid, ok := Between(&lo, &hi)
+		mid, ok := PositionBetween(&lo, &hi)
 		if !ok {
 			if i < 20 {
 				t.Fatalf("asked for rebalance after only %d inserts", i)
