@@ -22,6 +22,8 @@ const (
 	CodeForbidden        = "forbidden"
 	CodeMemberNotFound   = "member_not_found"
 	CodeLastAdmin        = "last_admin"
+	CodeVersionConflict  = "version_conflict"
+	CodeNeighborsChanged = "neighbors_changed"
 )
 
 const maxBodyBytes = 1 << 20

@@ -12,6 +12,12 @@ ORDER BY position, id;
 SELECT * FROM columns
 WHERE id = $1;
 
+-- LockColumn serializes position changes inside one column.
+-- name: LockColumn :exec
+SELECT id FROM columns
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetColumnWorkspaceID :one
 SELECT b.workspace_id
 FROM columns c

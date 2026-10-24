@@ -1,9 +1,8 @@
 package httpapi
 
 // Integration tests for boards and columns. They run against a real Postgres
-// (TEST_DATABASE_URL, see `make test-db`) because the interesting parts are
-// SQL: ordering, cascades, rebalancing and row locks. Without the variable
-// they are skipped.
+// (see testdb_test.go) because the interesting parts are SQL: ordering,
+// cascades, rebalancing and row locks.
 
 import (
 	"context"
@@ -12,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -32,16 +30,13 @@ type dbEnv struct {
 	q      *db.Queries
 	tokens *auth.TokenIssuer
 	boards *service.BoardService
+	tasks  *service.TaskService
 	router http.Handler
 }
 
 func newDBEnv(t *testing.T) *dbEnv {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; run `make test-db` and export it to run integration tests")
-	}
-	pool, err := pgxpool.New(context.Background(), url)
+	pool, err := pgxpool.New(context.Background(), testDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,13 +44,15 @@ func newDBEnv(t *testing.T) *dbEnv {
 
 	tokens := auth.NewTokenIssuer(testSecret, 15*time.Minute)
 	boards := service.NewBoardService(pool)
+	tasks := service.NewTaskService(pool)
 	return &dbEnv{
-		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards,
+		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks,
 		router: NewRouter(Deps{
 			Health:     service.NewHealthService(pool),
 			Tokens:     tokens,
 			Workspaces: service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 			Boards:     boards,
+			Tasks:      tasks,
 		}),
 	}
 }
@@ -117,14 +114,16 @@ func (e *dbEnv) column(boardID uuid.UUID, name string) uuid.UUID {
 	return c.ID
 }
 
-func (e *dbEnv) task(columnID uuid.UUID, title string, pos float64, by testUser) {
+// task inserts a task at an explicit position.
+func (e *dbEnv) task(columnID uuid.UUID, title string, pos float64, by testUser) uuid.UUID {
 	e.t.Helper()
-	_, err := e.q.CreateTask(context.Background(), db.CreateTaskParams{
+	t, err := e.q.CreateTask(context.Background(), db.CreateTaskParams{
 		ColumnID: columnID, Title: title, Position: pos, CreatedBy: uuid.NullUUID{UUID: by.ID, Valid: true},
 	})
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	return t.ID
 }
 
 func (e *dbEnv) do(method, path, body string, as testUser) *httptest.ResponseRecorder {

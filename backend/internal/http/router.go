@@ -15,6 +15,7 @@ type Deps struct {
 	Tokens       *auth.TokenIssuer
 	Workspaces   *service.WorkspaceService
 	Boards       *service.BoardService
+	Tasks        *service.TaskService
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
@@ -52,6 +53,13 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("PATCH /columns/{id}", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.renameColumn))
 	mux.Handle("DELETE /columns/{id}", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.deleteColumn))
 	mux.Handle("POST /columns/{id}/move", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.moveColumn))
+
+	th := &taskHandler{tasks: d.Tasks}
+	mux.Handle("POST /columns/{id}/tasks", guarded(bh.columnWorkspace, auth.ActionEditTasks, th.create))
+	mux.Handle("GET /tasks/{id}", guarded(th.taskWorkspace, auth.ActionRead, th.get))
+	mux.Handle("PATCH /tasks/{id}", guarded(th.taskWorkspace, auth.ActionEditTasks, th.update))
+	mux.Handle("PATCH /tasks/{id}/move", guarded(th.taskWorkspace, auth.ActionEditTasks, th.move))
+	mux.Handle("DELETE /tasks/{id}", guarded(th.taskWorkspace, auth.ActionEditTasks, th.delete))
 
 	var h http.Handler = withJSONMuxErrors(mux)
 	h = withCORS(d.CORSOrigins, h)

@@ -48,6 +48,19 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 	return i, err
 }
 
+const deleteTask = `-- name: DeleteTask :execrows
+DELETE FROM tasks
+WHERE id = $1
+`
+
+func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteTask, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getTask = `-- name: GetTask :one
 SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at FROM tasks
 WHERE id = $1
@@ -68,6 +81,66 @@ func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getTaskForUpdate = `-- name: GetTaskForUpdate :one
+SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at FROM tasks
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error) {
+	row := q.db.QueryRow(ctx, getTaskForUpdate, id)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ColumnID,
+		&i.Title,
+		&i.Description,
+		&i.Position,
+		&i.Version,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTaskWorkspaceID = `-- name: GetTaskWorkspaceID :one
+SELECT b.workspace_id
+FROM tasks t
+JOIN columns c ON c.id = t.column_id
+JOIN boards b ON b.id = c.board_id
+WHERE t.id = $1
+`
+
+func (q *Queries) GetTaskWorkspaceID(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getTaskWorkspaceID, id)
+	var workspace_id uuid.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
+}
+
+const lastTaskPosition = `-- name: LastTaskPosition :one
+
+SELECT position FROM tasks
+WHERE column_id = $1 AND id <> $2
+ORDER BY position DESC, id DESC
+LIMIT 1
+`
+
+type LastTaskPositionParams struct {
+	ColumnID  uuid.UUID
+	ExcludeID uuid.UUID
+}
+
+// Neighbor lookups order by (position, id) so ties cannot hide a task.
+// They skip the task being moved.
+func (q *Queries) LastTaskPosition(ctx context.Context, arg LastTaskPositionParams) (float64, error) {
+	row := q.db.QueryRow(ctx, lastTaskPosition, arg.ColumnID, arg.ExcludeID)
+	var position float64
+	err := row.Scan(&position)
+	return position, err
 }
 
 const listTasksByBoard = `-- name: ListTasksByBoard :many
@@ -144,36 +217,144 @@ func (q *Queries) ListTasksByColumn(ctx context.Context, columnID uuid.UUID) ([]
 	return items, nil
 }
 
-const updateTask = `-- name: UpdateTask :one
+const moveTask = `-- name: MoveTask :one
 UPDATE tasks
-SET column_id   = $3,
-    title       = $4,
-    description = $5,
-    position    = $6,
+SET column_id = $3,
+    position  = $4,
+    version   = version + 1
+WHERE id = $1 AND version = $2
+RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at
+`
+
+type MoveTaskParams struct {
+	ID       uuid.UUID
+	Version  int32
+	ColumnID uuid.UUID
+	Position float64
+}
+
+// MoveTask is UpdateTaskContent for column and position: same version guard.
+func (q *Queries) MoveTask(ctx context.Context, arg MoveTaskParams) (Task, error) {
+	row := q.db.QueryRow(ctx, moveTask,
+		arg.ID,
+		arg.Version,
+		arg.ColumnID,
+		arg.Position,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ColumnID,
+		&i.Title,
+		&i.Description,
+		&i.Position,
+		&i.Version,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const rebalanceTasks = `-- name: RebalanceTasks :exec
+UPDATE tasks t
+SET position = (r.rn * 1024)::double precision
+FROM (
+    SELECT o.id, row_number() OVER (ORDER BY o.position, o.id) AS rn
+    FROM tasks o
+    WHERE o.column_id = $1
+) r
+WHERE t.id = r.id AND t.column_id = $1
+`
+
+// RebalanceTasks spreads a column's tasks evenly (1024, 2048, ...) keeping
+// their order. The outer column_id check matters under READ COMMITTED: a task
+// moved out of the column concurrently must not get a position here.
+func (q *Queries) RebalanceTasks(ctx context.Context, columnID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, rebalanceTasks, columnID)
+	return err
+}
+
+const taskPositionAfter = `-- name: TaskPositionAfter :one
+SELECT position FROM tasks
+WHERE column_id = $1
+  AND id <> $2
+  AND (position > $3 OR (position = $3 AND id > $4))
+ORDER BY position, id
+LIMIT 1
+`
+
+type TaskPositionAfterParams struct {
+	ColumnID  uuid.UUID
+	ExcludeID uuid.UUID
+	Position  float64
+	ID        uuid.UUID
+}
+
+func (q *Queries) TaskPositionAfter(ctx context.Context, arg TaskPositionAfterParams) (float64, error) {
+	row := q.db.QueryRow(ctx, taskPositionAfter,
+		arg.ColumnID,
+		arg.ExcludeID,
+		arg.Position,
+		arg.ID,
+	)
+	var position float64
+	err := row.Scan(&position)
+	return position, err
+}
+
+const taskPositionBefore = `-- name: TaskPositionBefore :one
+SELECT position FROM tasks
+WHERE column_id = $1
+  AND id <> $2
+  AND (position < $3 OR (position = $3 AND id < $4))
+ORDER BY position DESC, id DESC
+LIMIT 1
+`
+
+type TaskPositionBeforeParams struct {
+	ColumnID  uuid.UUID
+	ExcludeID uuid.UUID
+	Position  float64
+	ID        uuid.UUID
+}
+
+func (q *Queries) TaskPositionBefore(ctx context.Context, arg TaskPositionBeforeParams) (float64, error) {
+	row := q.db.QueryRow(ctx, taskPositionBefore,
+		arg.ColumnID,
+		arg.ExcludeID,
+		arg.Position,
+		arg.ID,
+	)
+	var position float64
+	err := row.Scan(&position)
+	return position, err
+}
+
+const updateTaskContent = `-- name: UpdateTaskContent :one
+UPDATE tasks
+SET title       = $3,
+    description = $4,
     version     = version + 1
 WHERE id = $1 AND version = $2
 RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at
 `
 
-type UpdateTaskParams struct {
+type UpdateTaskContentParams struct {
 	ID          uuid.UUID
 	Version     int32
-	ColumnID    uuid.UUID
 	Title       string
 	Description string
-	Position    float64
 }
 
-// UpdateTask applies the change only if the caller saw the latest version.
-// Zero rows (pgx.ErrNoRows) means a concurrent update won: return 409.
-func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error) {
-	row := q.db.QueryRow(ctx, updateTask,
+// UpdateTaskContent applies the change only if the caller saw the latest
+// version. Zero rows (pgx.ErrNoRows) means someone else changed it first: 409.
+func (q *Queries) UpdateTaskContent(ctx context.Context, arg UpdateTaskContentParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskContent,
 		arg.ID,
 		arg.Version,
-		arg.ColumnID,
 		arg.Title,
 		arg.Description,
-		arg.Position,
 	)
 	var i Task
 	err := row.Scan(

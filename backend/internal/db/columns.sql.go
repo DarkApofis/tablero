@@ -114,6 +114,18 @@ func (q *Queries) ListColumnsByBoard(ctx context.Context, boardID uuid.UUID) ([]
 	return items, nil
 }
 
+const lockColumn = `-- name: LockColumn :exec
+SELECT id FROM columns
+WHERE id = $1
+FOR UPDATE
+`
+
+// LockColumn serializes position changes inside one column.
+func (q *Queries) LockColumn(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockColumn, id)
+	return err
+}
+
 const rebalanceColumns = `-- name: RebalanceColumns :exec
 UPDATE columns c
 SET position = (r.rn * 1024)::double precision
