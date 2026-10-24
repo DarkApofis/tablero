@@ -79,6 +79,7 @@ func (q *Queries) DeleteLabel(ctx context.Context, id uuid.UUID) (int64, error) 
 const filterBoardLabels = `-- name: FilterBoardLabels :many
 SELECT id FROM labels
 WHERE board_id = $1 AND id = ANY($2::uuid[])
+FOR KEY SHARE
 `
 
 type FilterBoardLabelsParams struct {
@@ -87,7 +88,9 @@ type FilterBoardLabelsParams struct {
 }
 
 // FilterBoardLabels returns which of ids are labels of the board, to reject
-// labels from other boards or that do not exist.
+// labels from other boards or that do not exist, and keeps them from being
+// deleted until the transaction ends, so assigning them cannot race with a
+// delete (FOR KEY SHARE: renaming them is still allowed).
 func (q *Queries) FilterBoardLabels(ctx context.Context, arg FilterBoardLabelsParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, filterBoardLabels, arg.BoardID, arg.Ids)
 	if err != nil {

@@ -1,9 +1,13 @@
 package postgres_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
@@ -141,6 +145,41 @@ func TestTaskLabelsAndDetail(t *testing.T) {
 	}
 	if _, err := f.boards.ColumnLocation(ctx, domain.NewID()); !errors.Is(err, domain.ErrColumnNotFound) {
 		t.Errorf("ColumnLocation(unknown) = %v", err)
+	}
+}
+
+// Labels being assigned are locked until the assignment commits: a delete
+// from another connection has to wait (here it gives up after a short
+// lock_timeout) instead of removing the label halfway through.
+func TestLockBoardLabelsBlocksTheirDeletion(t *testing.T) {
+	f := newBoardFixture(t)
+	bug, _ := f.labels.CreateLabel(f.ctx, f.board.ID, "Bug", "#ff0000")
+
+	err := f.tx.InTx(f.ctx, func(ctx context.Context) error {
+		if n, err := f.boards.LockBoardLabels(ctx, f.board.ID, []domain.ID{bug.ID}); err != nil || n != 1 {
+			t.Fatalf("lock = %d, %v", n, err)
+		}
+		c, err := f.db.Acquire(f.ctx)
+		if err != nil {
+			return err
+		}
+		defer c.Release()
+		if _, err := c.Exec(f.ctx, "SET lock_timeout = '200ms'"); err != nil {
+			return err
+		}
+		_, err = c.Exec(f.ctx, "DELETE FROM labels WHERE id = $1", uuid.UUID(bug.ID))
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "55P03" { // lock_not_available
+			t.Errorf("delete while locked: err = %v, want a lock timeout", err)
+		}
+		_, _ = c.Exec(f.ctx, "RESET lock_timeout")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Once the transaction ends, the delete goes through.
+	if err := f.labels.DeleteLabel(f.ctx, bug.ID); err != nil {
+		t.Errorf("delete after commit: %v", err)
 	}
 }
 

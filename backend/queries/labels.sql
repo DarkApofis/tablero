@@ -28,10 +28,13 @@ DELETE FROM labels
 WHERE id = $1;
 
 -- FilterBoardLabels returns which of ids are labels of the board, to reject
--- labels from other boards or that do not exist.
+-- labels from other boards or that do not exist, and keeps them from being
+-- deleted until the transaction ends, so assigning them cannot race with a
+-- delete (FOR KEY SHARE: renaming them is still allowed).
 -- name: FilterBoardLabels :many
 SELECT id FROM labels
-WHERE board_id = @board_id AND id = ANY(@ids::uuid[]);
+WHERE board_id = @board_id AND id = ANY(@ids::uuid[])
+FOR KEY SHARE;
 
 -- name: ListTaskLabels :many
 SELECT l.*
