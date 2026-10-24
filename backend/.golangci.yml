@@ -3,3 +3,50 @@ version: "2"
 linters:
   # errcheck, govet, ineffassign, staticcheck, unused
   default: standard
+  enable:
+    - depguard
+
+  settings:
+    # Dependency rules of the hexagonal architecture (docs/DECISIONS.md #7).
+    # Dependencies point inward: adapters -> app -> domain.
+    depguard:
+      rules:
+        domain:
+          # Pure: only the standard library.
+          list-mode: strict
+          files:
+            - "**/internal/domain/**"
+          allow:
+            - $gostd
+
+        app:
+          # Use cases see the domain and nothing else; adapters reach them
+          # through the ports each package defines.
+          list-mode: strict
+          files:
+            - "**/internal/app/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/DarkApofis/tablero/backend/internal/domain
+
+        generated-sql:
+          # sqlc's types stay inside the postgres adapter.
+          files:
+            - $all
+            - "!$test"
+            - "!**/internal/adapters/postgres/**"
+          deny:
+            - pkg: github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db
+              desc: sqlc types are private to the postgres adapter; map them to domain entities there
+
+        http-adapter:
+          # The HTTP adapter talks to use cases, never to storage.
+          files:
+            - "**/internal/adapters/http/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/DarkApofis/tablero/backend/internal/adapters/postgres
+              desc: the HTTP adapter must go through the use cases in internal/app
+            - pkg: github.com/jackc/pgx
+              desc: the HTTP adapter must not use the database driver

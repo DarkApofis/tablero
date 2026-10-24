@@ -5,13 +5,14 @@ con concurrencia optimista y orden por posición fraccionaria.
 
 ## Estructura
 
-- `backend/` — API en Go (`net/http`, PostgreSQL con pgx, migraciones con goose, consultas con sqlc).
-  - `cmd/api` — punto de entrada.
+- `backend/` — API en Go con arquitectura hexagonal ([decisión 7](docs/DECISIONS.md)): `net/http`, PostgreSQL con pgx, migraciones con goose, consultas con sqlc.
+  - `cmd/api` — raíz de composición: construye los adaptadores y los pasa a los casos de uso.
+  - `internal/domain` — entidades, reglas, matriz de roles y errores de dominio (solo stdlib).
+  - `internal/app/{auth,workspace,board,task}` — casos de uso; cada paquete define sus puertos.
+  - `internal/adapters/http` — router, handlers y middlewares.
+  - `internal/adapters/postgres` — repositorios, `TxManager` y el código generado por sqlc (`db/`).
+  - `internal/adapters/{token,hasher,events}` — JWT, argon2id y publicación de eventos.
   - `internal/config` — configuración desde variables de entorno.
-  - `internal/http` — router, handlers y middlewares.
-  - `internal/service` — lógica de negocio.
-  - `internal/auth` — contraseñas, JWT y matriz de permisos.
-  - `internal/db` — código generado por sqlc (más el pool y transacciones).
   - `migrations/`, `queries/` — SQL de goose y de sqlc.
 - `frontend/` — Next.js (App Router, TypeScript, Tailwind) con pnpm.
 - `docs/` — [API (OpenAPI)](docs/openapi.yaml) y [decisiones de arquitectura](docs/DECISIONS.md).
@@ -93,21 +94,25 @@ go test ./...          # unitarios + integración (necesita Docker)
 go test -short ./...   # solo unitarios
 ```
 
-Los tests de integración levantan un Postgres efímero con
-[Testcontainers](https://golang.testcontainers.org/) y le aplican las migraciones.
-Para iterar más rápido contra una base ya levantada:
+Los casos de uso (`internal/app`) se prueban con fakes en memoria de sus puertos.
+Los repositorios (`internal/adapters/postgres`) y la API completa
+(`internal/adapters/http`) se prueban contra un Postgres efímero de
+[Testcontainers](https://golang.testcontainers.org/), al que se le aplican las
+migraciones. Para iterar más rápido contra un servidor ya levantado, apunta
+`TEST_DATABASE_URL` a él: cada paquete de tests crea ahí su propia base, la migra
+y la borra al terminar.
 
 ```sh
-make test-db   # crea y migra tablero_test en el Postgres de docker compose
-TEST_DATABASE_URL="postgres://tablero:tablero@localhost:5432/tablero_test?sslmode=disable" go test ./...
+TEST_DATABASE_URL="postgres://tablero:tablero@localhost:5432/tablero?sslmode=disable" go test ./...
 ```
 
-Lint: `golangci-lint run ./...` en `backend/` y `pnpm lint` en `frontend/`.
+Lint: `golangci-lint run ./...` en `backend/` (incluye `depguard`, que impide que
+`domain` o `app` importen adaptadores) y `pnpm lint` en `frontend/`.
 
 ## Generación de código
 
 Tras cambiar `backend/queries/*.sql` o las migraciones, regenera el código de acceso
-a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/db`.
+a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/adapters/postgres/db`.
 
 `TestOpenAPIMatchesRouter` falla si una ruta del router no está en
 `docs/openapi.yaml` o viceversa.
@@ -116,7 +121,7 @@ a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/db`.
 
 `.github/workflows/ci.yml` corre en cada push a `main` y en cada pull request:
 
-- **Backend:** `go vet`, `golangci-lint`, tests (con Postgres como servicio) y build.
+- **Backend:** `go vet`, `golangci-lint` (con las reglas de dependencias de la arquitectura), tests (con Postgres como servicio) y build.
 - **Frontend:** `pnpm lint` y `pnpm build`.
 
 ## Estado

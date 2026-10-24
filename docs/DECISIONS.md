@@ -32,7 +32,7 @@ Los cambios se envían a los clientes mediante **Server-Sent Events** (`text/eve
 
 ## 5. Roles y autorización por workspace
 
-Los permisos se definen por **rol dentro de cada workspace** (`admin`, `member`, `viewer`) en una única matriz (`internal/auth/permissions.go`):
+Los permisos se definen por **rol dentro de cada workspace** (`admin`, `member`, `viewer`) en una única matriz del dominio (`internal/domain/role.go`):
 
 | Acción | admin | member | viewer |
 |---|---|---|---|
@@ -44,9 +44,9 @@ Los permisos se definen por **rol dentro de cada workspace** (`admin`, `member`,
 
 Lo que no está en la matriz se deniega. Gestionar boards y columnas es solo de admin porque la definición original de `member` se limita a tareas; cambiarlo es una línea de la matriz.
 
-- **Un solo punto de control:** toda ruta bajo un workspace pasa por el middleware `requireAccess`, que resuelve el workspace desde el path o a través del board, la columna o la tarea indicados, lee el rol del usuario y aplica la matriz. Los handlers no repiten comprobaciones.
+- **Un solo punto de control:** toda ruta bajo un workspace pasa por el middleware `requireAccess`. El middleware resuelve el workspace desde el path o a través del board, la columna, la tarea o la etiqueta indicados, y le pide a `workspace.Authorizer` (capa app) que lea el rol del usuario y aplique la matriz. El resultado es un `domain.Access` que el handler entrega al caso de uso, y cada caso de uso vuelve a exigir con `Access.Require` la acción que necesita (decisión 7).
 - **403 sin revelar existencia:** si el usuario no es miembro, si el recurso no existe o si el id no es válido, la respuesta es la misma `403 "No tienes acceso a este workspace"`, idéntica byte a byte. Un miembro sin permiso recibe otro 403, "Tu rol no permite esta acción", porque a él no se le revela nada nuevo. Por eso los recursos inexistentes dan 403 y no 404.
-- **Siempre al menos un admin:** cambiar roles y quitar miembros se hace en una transacción que bloquea la fila del workspace (`SELECT … FOR UPDATE`), vuelve a comprobar el rol de quien actúa (por si lo degradaron entre la autorización y la transacción) y cuenta admins antes de escribir. Si el cambio dejaría el workspace sin admin, responde `409 last_admin`. Así, dos admins que se degradan mutuamente a la vez no pueden dejarlo sin ninguno.
+- **Siempre al menos un admin:** cambiar roles y quitar miembros se hace en una transacción que bloquea la fila del workspace (`SELECT … FOR NO KEY UPDATE`), vuelve a comprobar el rol de quien actúa (por si lo degradaron entre la autorización y la transacción) y cuenta admins antes de escribir. Si el cambio dejaría el workspace sin admin, responde `409 last_admin`. Así, dos admins que se degradan mutuamente a la vez no pueden dejarlo sin ninguno.
 
 **Por qué:** centralizar la decisión en una matriz y un middleware hace que añadir rutas no pueda olvidar la autorización, y que los tests puedan recorrer la matriz completa (rol × acción y actor × ruta).
 
@@ -64,3 +64,61 @@ Las tareas tienen `priority` (`low|medium|high|urgent`, por defecto `medium`), `
 - Los campos nuevos de la API van en `snake_case` (`due_date`, `assignee_id`, `label_ids`), igual que las respuestas. El cuerpo de `/tasks/{id}/move` sigue en camelCase (`columnId`, …) tal como se definió.
 
 **Por qué:** mantener una sola guarda de versión para todo lo editable evita estados mezclados entre dos clientes, y validar con bloqueos dentro de la transacción (en lugar de comprobar antes) cierra las carreras con bajas de miembros y borrado de etiquetas sin bloquear tablas enteras.
+
+## 7. Arquitectura hexagonal (puertos y adaptadores)
+
+El backend se organiza en tres anillos, y las dependencias solo apuntan hacia dentro:
+
+```mermaid
+flowchart LR
+    subgraph adapters["internal/adapters"]
+        http["http<br/>(router, handlers, middleware)"]
+        postgres["postgres<br/>(repositorios, TxManager, sqlc)"]
+        token["token (JWT)"]
+        hasher["hasher (argon2id)"]
+        events["events (Noop, Memory)"]
+    end
+    subgraph app["internal/app"]
+        auth["auth"]
+        workspace["workspace<br/>(+ Authorizer)"]
+        board["board"]
+        task["task"]
+    end
+    domain["internal/domain<br/>entidades, reglas, matriz de roles, errores"]
+    main["cmd/api/main.go<br/>composition root"]
+
+    http -->|llama casos de uso| app
+    postgres -. implementa puertos .-> app
+    token -. implementa puertos .-> app
+    hasher -. implementa puertos .-> app
+    events -. implementa puertos .-> app
+    app --> domain
+    adapters --> domain
+    main --> adapters
+    main --> app
+```
+
+- **`internal/domain`** tiene las entidades (User, Workspace, Board, Column, Task, Label…), las reglas puras (validaciones, posiciones fraccionarias, diff de una edición, la matriz de roles y `Access.Require`) y los errores de dominio (`ErrConflict` y `ConflictError` con el estado actual, `ErrForbidden`, `ErrNotMember`, `ErrXNotFound`, `ValidationError`). Solo importa la librería estándar. Por eso tiene su propio `ID` (`[16]byte`, la misma representación que `google/uuid`): los adaptadores convierten entre ambos sin coste.
+- **`internal/app/{auth,workspace,board,task}`** contiene los casos de uso. **Cada paquete define los puertos que consume**, pequeños y específicos (por ejemplo, `task.BoardRepository` solo tiene las cuatro operaciones de columnas y etiquetas que las tareas necesitan, aunque `postgres.Boards` implemente más). Los reciben por constructor y no conocen HTTP ni SQL.
+  - Puertos: `UserRepository`, `RefreshTokenRepository`, `PasswordHasher`, `TokenIssuer`, `Clock`, `WorkspaceRepository`, `BoardRepository`, `LabelRepository`, `TaskRepository`, `ActivityRepository`, `TxManager` y `EventPublisher`.
+- **`internal/adapters`** implementa los puertos (`postgres`, `token`, `hasher`, `events`) o traduce al mundo exterior (`http`). `postgres` mapea las filas de sqlc a entidades; el código generado vive en `adapters/postgres/db` y no sale de ahí. `http` traduce errores de dominio a status: `ErrConflict` → 409 con `current`, `ErrForbidden`/`ErrNotMember` → los dos 403, `ErrXNotFound` → 404, `ValidationError` → 422.
+- **`cmd/api/main.go`** es la raíz de composición: construye los adaptadores y se los pasa a los casos de uso a mano, sin frameworks de inyección de dependencias.
+
+Detalles que importan:
+
+- **Transacciones:** `TxManager.InTx(ctx, fn)` abre la transacción y la pasa en el `context`. Todos los repositorios de `postgres` la usan si está presente, así que la escritura de la tarea y su entrada de `activity_log` hacen commit o rollback juntas sin que el caso de uso vea `pgx`. `InReadTx` da un snapshot de solo lectura (el GET del board, el 409). Las llamadas anidadas se unen a la transacción exterior.
+- **Autorización:** se decide en la capa app. `workspace.Authorizer` aplica la matriz del dominio y devuelve un `domain.Access`, y cada caso de uso exige su acción sobre él. El middleware HTTP pide el `Access` **antes de leer el cuerpo**, igual que antes de esta refactorización, para que un no miembro reciba siempre el mismo 403 y nunca un 400 o un 422 que le dé pistas. Los cambios de membresía vuelven a leer el rol bajo el bloqueo, por si el `Access` quedó obsoleto.
+- **Eventos:** los casos de uso publican un `domain.Event` (derivado de la entrada de actividad, con su id) **después** del commit, nunca si hubo rollback. Hoy el adaptador es `events.Noop`; la fase 2 lo sustituirá por el difusor de SSE (decisión 3) sin tocar los casos de uso.
+- **Comprobación en CI:** golangci-lint ejecuta `depguard` (`backend/.golangci.yml`):
+  - `domain` solo puede importar la stdlib.
+  - `app` solo la stdlib y `domain`.
+  - Nadie fuera de `adapters/postgres` puede importar los tipos de sqlc.
+  - `adapters/http` no puede importar `adapters/postgres` ni `pgx`.
+
+  Que `domain` importe un adaptador además es un ciclo de imports, que el compilador ya rechaza.
+- **Tests:**
+  - Los casos de uso se prueban con fakes en memoria de sus puertos (`internal/app/*/…_test.go`): conflicto de versión entre dos clientes, matriz de roles por caso de uso, rollback si falla la actividad y eventos solo tras el commit.
+  - Los repositorios se prueban contra Postgres real (`internal/adapters/postgres/*_test.go`, Testcontainers): guarda de versión, bloqueos, vecinos, rollback del `TxManager`.
+  - Los tests HTTP de extremo a extremo siguen igual. Solo cambió cómo se cablean.
+
+**Por qué:** la lógica que más importa (concurrencia optimista, reglas de responsable y etiquetas, autorización, último admin) queda en código sin infraestructura, que se prueba en milisegundos con fakes. La base de datos y HTTP se pueden cambiar o ampliar (SSE en la fase 2) sin tocarla. Definir los puertos en el paquete que los consume mantiene las interfaces pequeñas, y la regla de dependencias se comprueba en CI en vez de depender de la disciplina.
