@@ -173,6 +173,19 @@ func TestRegister(t *testing.T) {
 		}
 	})
 
+	t.Run("access cookie for the event stream is httpOnly and scoped to /boards", func(t *testing.T) {
+		var access *http.Cookie
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == accessCookieName {
+				access = c
+			}
+		}
+		if access == nil || access.Value != s.AccessToken || !access.HttpOnly || !access.Secure ||
+			access.SameSite != http.SameSiteLaxMode || access.Path != "/boards" || access.MaxAge <= 0 || access.MaxAge > 900 {
+			t.Errorf("access cookie = %+v", access)
+		}
+	})
+
 	t.Run("only the refresh token hash is stored", func(t *testing.T) {
 		if len(e.store.refresh) != 1 {
 			t.Fatalf("stored refresh tokens = %d, want 1", len(e.store.refresh))

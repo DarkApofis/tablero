@@ -17,6 +17,12 @@ const (
 	refreshCookieName = "refresh_token"
 	// The refresh cookie is only sent to /auth/* (refresh and logout live there).
 	refreshCookiePath = "/auth"
+	// The access token also travels in a cookie for EventSource, which cannot
+	// send headers. Only the board event stream accepts it (requireStreamAuth):
+	// every other route needs the Authorization header, so the cookie cannot
+	// be used for cross-site requests that change something.
+	accessCookieName = "access_token"
+	accessCookiePath = "/boards"
 
 	msgInvalidCredentials = "Correo o contraseña incorrectos"
 )
@@ -117,6 +123,16 @@ func (h *authHandler) writeSession(w http.ResponseWriter, status int, s auth.Ses
 		Secure:   h.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     accessCookieName,
+		Value:    s.AccessToken,
+		Path:     accessCookiePath,
+		Expires:  s.AccessExpiresAt,
+		MaxAge:   int(time.Until(s.AccessExpiresAt).Seconds()),
+		HttpOnly: true,
+		Secure:   h.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, status, sessionResponse{
 		User:        newUserResponse(s.User),
@@ -134,9 +150,29 @@ type Authenticator interface {
 // requireAuth rejects requests without a valid "Authorization: Bearer <jwt>"
 // and stores the user id in the request context for the next handler.
 func requireAuth(authn Authenticator, next http.Handler) http.Handler {
+	return authenticate(authn, bearerToken, next)
+}
+
+// requireStreamAuth is requireAuth for the event stream: it also takes the
+// token from the access_token cookie, since EventSource cannot set headers.
+func requireStreamAuth(authn Authenticator, next http.Handler) http.Handler {
+	return authenticate(authn, func(r *http.Request) (string, bool) {
+		if c, err := r.Cookie(accessCookieName); err == nil && c.Value != "" {
+			return c.Value, true
+		}
+		return bearerToken(r)
+	}, next)
+}
+
+func bearerToken(r *http.Request) (string, bool) {
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	return token, ok && strings.EqualFold(scheme, "Bearer") && token != ""
+}
+
+func authenticate(authn Authenticator, tokenOf func(*http.Request) (string, bool), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
-		if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
+		token, ok := tokenOf(r)
+		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer`)
 			WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "No autenticado")
 			return

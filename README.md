@@ -130,6 +130,14 @@ Hecho: autenticación (registro, login, `/me`), workspaces y miembros con roles,
 boards, columnas y tareas con reordenamiento, concurrencia optimista, prioridad,
 fecha límite, responsable, archivado, etiquetas por tablero y registro de actividad.
 
+Tiempo real: `GET /boards/{id}/events` emite por SSE los cambios del tablero
+([decisión 3](docs/DECISIONS.md)). Para probarlo con curl, usa el access token de
+`/auth/login` (el navegador usa la cookie `access_token`):
+
+```sh
+curl -N -H "Authorization: Bearer $TOKEN" http://localhost:8080/boards/$BOARD/events
+```
+
 Pendiente: refresco y cierre de sesión (`/auth/refresh`, `/auth/logout`), invitar
-miembros, tiempo real con SSE ([decisión 3](docs/DECISIONS.md)) y la interfaz del
+miembros y la interfaz del
 tablero en el frontend.

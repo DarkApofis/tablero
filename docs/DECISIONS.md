@@ -20,6 +20,16 @@ Los cambios se envían a los clientes mediante **Server-Sent Events** (`text/eve
 
 **Por qué:** el flujo en tiempo real es solo servidor → cliente; SSE funciona sobre HTTP estándar, reconecta automáticamente y es más simple que WebSockets.
 
+Cómo está hecho (`GET /boards/{id}/events`):
+
+- **Hub en memoria** (`adapters/events.Hub`): implementa el puerto `EventPublisher` de los casos de uso y el puerto `EventSubscriber` de `board.StreamService`. Guarda suscriptores por board, cada uno con un canal con buffer (64 eventos). **Publicar nunca bloquea:** si el buffer de un suscriptor está lleno (cliente lento), el hub lo da de baja y cierra su canal. El handler termina el stream, `EventSource` reconecta y el cliente recarga el board. Un cliente lento no frena las escrituras ni a los demás clientes.
+- **Qué se envía:** solo cambios ya confirmados. Los casos de uso publican después del commit, y cada mensaje es la entrada de actividad (`id` SSE = id de la entrada, `event` = tipo, `data` = JSON). Antes se envía `retry: 3000`.
+- **Autenticación por cookie:** `EventSource` no puede enviar cabeceras, así que login y registro también fijan el access token en la cookie `access_token` (`HttpOnly; SameSite=Lax; Path=/boards`). **Solo** el stream la acepta (también acepta Bearer). El resto de la API sigue exigiendo la cabecera `Authorization`, de modo que la cookie no permite CSRF sobre rutas que escriben, y el stream es de solo lectura y está protegido por CORS.
+- **Permiso:** cualquier rol que pueda leer el board (viewer o más), con el mismo `requireAccess` y el mismo 403 que el resto. **Cada heartbeat (`: ping`, cada 25 s) vuelve a comprobar el acceso**: si al usuario lo quitan del workspace, su stream se cierra en el siguiente ping.
+- **Timeouts:** el servidor tiene `WriteTimeout` de 30 s para las respuestas normales. El stream lo reemplaza en su propia conexión con `http.ResponseController`: antes de cada escritura fija un plazo de 10 s y después hace `Flush`. El stream puede durar indefinidamente, pero una conexión muerta se detecta en la siguiente escritura. Un test lo comprueba con un `WriteTimeout` de 150 ms: sin el `ResponseController`, el stream se corta.
+- **Fin limpio:** el stream termina cuando se cancela el contexto (el cliente se desconecta), cuando el hub cierra el canal o al apagar el servidor (`RegisterOnShutdown(hub.Close)`), y siempre cancela su suscripción.
+- **Límites conocidos:** el hub vive en la memoria de un proceso; con varias instancias haría falta un bus compartido (por ejemplo `LISTEN/NOTIFY` de Postgres) detrás del mismo puerto. No hay reenvío desde `Last-Event-ID`: tras reconectar, el cliente recarga el board (o lee `/activity`). El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. Cuando exista `/auth/refresh`, el cliente renovará la cookie antes de reconectar.
+
 ## 4. Autenticación: JWT de acceso corto y refresh token opaco en cookie
 
 - **Contraseñas** con **argon2id** (parámetros mínimos de OWASP: 19 MiB, 2 iteraciones, 1 hilo) en formato PHC (`$argon2id$v=19$m=…,t=…,p=…$sal$hash`). Los parámetros viajan en el hash, así que se pueden endurecer sin invalidar los existentes. La contraseña debe tener entre 8 y 128 caracteres; el máximo acota el coste de hashear por petición.
@@ -76,7 +86,7 @@ flowchart LR
         postgres["postgres<br/>(repositorios, TxManager, sqlc)"]
         token["token (JWT)"]
         hasher["hasher (argon2id)"]
-        events["events (Noop, Memory)"]
+        events["events (Hub, Noop, Memory)"]
     end
     subgraph app["internal/app"]
         auth["auth"]
@@ -108,7 +118,7 @@ Detalles que importan:
 
 - **Transacciones:** `TxManager.InTx(ctx, fn)` abre la transacción y la pasa en el `context`. Todos los repositorios de `postgres` la usan si está presente, así que la escritura de la tarea y su entrada de `activity_log` hacen commit o rollback juntas sin que el caso de uso vea `pgx`. `InReadTx` da un snapshot de solo lectura (el GET del board, el 409). Las llamadas anidadas se unen a la transacción exterior.
 - **Autorización:** se decide en la capa app. `workspace.Authorizer` aplica la matriz del dominio y devuelve un `domain.Access`, y cada caso de uso exige su acción sobre él. El middleware HTTP pide el `Access` **antes de leer el cuerpo**, igual que antes de esta refactorización, para que un no miembro reciba siempre el mismo 403 y nunca un 400 o un 422 que le dé pistas. Los cambios de membresía vuelven a leer el rol bajo el bloqueo, por si el `Access` quedó obsoleto.
-- **Eventos:** los casos de uso publican un `domain.Event` (derivado de la entrada de actividad, con su id) **después** del commit, nunca si hubo rollback. Hoy el adaptador es `events.Noop`; la fase 2 lo sustituirá por el difusor de SSE (decisión 3) sin tocar los casos de uso.
+- **Eventos:** los casos de uso publican un `domain.Event` (derivado de la entrada de actividad, con su id) **después** del commit, nunca si hubo rollback. El adaptador es `events.Hub`, que alimenta el stream SSE (decisión 3). Sustituirlo, por ejemplo por un bus compartido entre instancias, no toca los casos de uso.
 - **Comprobación en CI:** golangci-lint ejecuta `depguard` (`backend/.golangci.yml`):
   - `domain` solo puede importar la stdlib.
   - `app` solo la stdlib y `domain`.
@@ -121,4 +131,4 @@ Detalles que importan:
   - Los repositorios se prueban contra Postgres real (`internal/adapters/postgres/*_test.go`, Testcontainers): guarda de versión, bloqueos, vecinos, rollback del `TxManager`.
   - Los tests HTTP de extremo a extremo siguen igual. Solo cambió cómo se cablean.
 
-**Por qué:** la lógica que más importa (concurrencia optimista, reglas de responsable y etiquetas, autorización, último admin) queda en código sin infraestructura, que se prueba en milisegundos con fakes. La base de datos y HTTP se pueden cambiar o ampliar (SSE en la fase 2) sin tocarla. Definir los puertos en el paquete que los consume mantiene las interfaces pequeñas, y la regla de dependencias se comprueba en CI en vez de depender de la disciplina.
+**Por qué:** la lógica que más importa (concurrencia optimista, reglas de responsable y etiquetas, autorización, último admin) queda en código sin infraestructura, que se prueba en milisegundos con fakes. La base de datos y HTTP se pueden cambiar o ampliar (como el SSE) sin tocarla. Definir los puertos en el paquete que los consume mantiene las interfaces pequeñas, y la regla de dependencias se comprueba en CI en vez de depender de la disciplina.

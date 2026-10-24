@@ -57,8 +57,10 @@ func run() error {
 	slog.Info("database connected")
 
 	tx := postgres.NewTxManager(pool)
-	// Phase 2 replaces it with the SSE broadcaster.
-	publisher := events.Noop{}
+	// The hub is both the use cases' EventPublisher and the source of the
+	// board event streams.
+	hub := events.NewHub(events.DefaultBuffer)
+	publisher := hub
 
 	users := postgres.NewUsers(pool)
 	workspaces := postgres.NewWorkspaces(pool)
@@ -84,9 +86,16 @@ func run() error {
 			Tasks:        task.NewService(postgres.NewTasks(pool), boards, workspaces, activity, tx, publisher, systemClock{}),
 			Labels:       board.NewLabelService(labels),
 			Activity:     board.NewActivityService(activity),
+			Streams:      board.NewStreamService(hub),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
+		// Caps ordinary responses; the event stream replaces it per write on its
+		// own connection (http.ResponseController), so streams are not cut.
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  2 * time.Minute,
 	}
+	// Shutdown waits for open requests; closing the hub ends the streams.
+	srv.RegisterOnShutdown(hub.Close)
 
 	errCh := make(chan error, 1)
 	go func() {

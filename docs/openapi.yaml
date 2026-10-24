@@ -8,7 +8,10 @@ info:
     **Autenticación.** Las rutas protegidas exigen `Authorization: Bearer <access_token>`,
     un JWT HS256 de corta duración (15 min por defecto) que devuelven `/auth/register`
     y `/auth/login`. Esas dos rutas también fijan un refresh token en la cookie
-    `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`).
+    `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`) y el mismo access
+    token en la cookie `access_token` (`Path=/boards`), que **solo** acepta
+    `GET /boards/{id}/events` porque `EventSource` no puede enviar cabeceras; el resto
+    de rutas exige la cabecera `Authorization`.
 
     **Errores.** Todas las respuestas de error tienen la forma
     `{"error": {"code": "...", "message": "..."}}`; los errores de validación (422)
@@ -64,6 +67,8 @@ tags:
     description: Etiquetas de un tablero, que se asignan a sus tareas.
   - name: activity
     description: Registro de cambios de un tablero.
+  - name: events
+    description: Cambios de un tablero en tiempo real (Server-Sent Events).
 
 security:
   - bearerAuth: []
@@ -416,6 +421,66 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [events]
+      summary: Stream de cambios del board (text/event-stream)
+      operationId: streamBoardEvents
+      description: |
+        Permiso: leer (viewer o más). Autenticación con la cookie `access_token` (pensada
+        para `EventSource`, que no envía cabeceras) o con `Authorization: Bearer`.
+
+        Primero envía `retry: 3000`. Luego, por cada cambio del board ya confirmado
+        (`task_created`, `task_updated`, `task_moved`), un mensaje con `id` (el id de la
+        entrada de actividad), `event` (el tipo) y `data` (JSON de `StreamEvent`).
+        Cada 25 s envía el comentario `: ping` como heartbeat y vuelve a comprobar el
+        acceso: si el usuario ya no es miembro, cierra el stream.
+
+        El stream termina si el cliente se desconecta, si se queda tan atrás que llena su
+        buffer (debe reconectar y recargar el board) o al apagar el servidor. Cabeceras:
+        `Cache-Control: no-cache` y `X-Accel-Buffering: no`.
+      security:
+        - accessCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: El stream; no termina mientras el cliente siga conectado.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "Mensajes SSE; el `data` de cada evento es un `StreamEvent`."
+                x-sse-data:
+                  type: object
+                  required: [id, type, board_id, actor_id, payload, created_at]
+                  description: "`data` de cada mensaje del stream: una entrada de actividad recién confirmada."
+                  properties:
+                    id: { type: integer, format: int64, description: "Id de la entrada de actividad; también es el `id` SSE." }
+                    type:
+                      type: string
+                      enum: [task_created, task_updated, task_moved]
+                    board_id: { type: string, format: uuid }
+                    actor_id: { type: [string, "null"], format: uuid }
+                    payload:
+                      description: El mismo payload que en la actividad, según `type`.
+                      oneOf:
+                        - $ref: "#/components/schemas/TaskCreatedPayload"
+                        - $ref: "#/components/schemas/TaskUpdatedPayload"
+                        - $ref: "#/components/schemas/TaskMovedPayload"
+                    created_at: { type: string, format: date-time }
+              example: |
+                retry: 3000
+
+                id: 42
+                event: task_moved
+                data: {"id":42,"type":"task_moved","board_id":"…","actor_id":"…","payload":{…},"created_at":"…"}
+
+                : ping
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /boards/{id}/labels:
@@ -790,6 +855,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    accessCookie:
+      type: apiKey
+      in: cookie
+      name: access_token
+      description: El access token en cookie; solo lo acepta el stream de eventos.
 
   parameters:
     ID:
@@ -801,7 +871,9 @@ components:
 
   headers:
     RefreshCookie:
-      description: "`refresh_token=<opaco>; Path=/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=...`"
+      description: |
+        Dos cookies: `refresh_token=<opaco>; Path=/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=...`
+        y `access_token=<jwt>; Path=/boards; HttpOnly; Secure; SameSite=Lax; Max-Age=<vida del access token>`.
       schema: { type: string }
 
   responses:

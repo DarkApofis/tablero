@@ -36,6 +36,8 @@ type dbEnv struct {
 	tokens *token.Issuer
 	boards *board.Service
 	tasks  *task.Service
+	hub    *events.Hub
+	deps   Deps // what router was built from, to build variants (see events tests)
 	router http.Handler
 }
 
@@ -51,19 +53,23 @@ func newDBEnv(t *testing.T) *dbEnv {
 	txm := postgres.NewTxManager(pool)
 	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), txm)
 	workspaces := postgres.NewWorkspaces(pool)
-	tasks := task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, postgres.NewActivity(pool), txm, events.Noop{}, systemClock{})
+	hub := events.NewHub(events.DefaultBuffer)
+	t.Cleanup(hub.Close)
+	tasks := task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, postgres.NewActivity(pool), txm, hub, systemClock{})
+	deps := Deps{
+		Health:     pool,
+		Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
+		Authorizer: workspace.NewAuthorizer(workspaces),
+		Workspaces: workspace.NewService(workspaces, txm, hub),
+		Boards:     boards,
+		Tasks:      tasks,
+		Labels:     board.NewLabelService(postgres.NewLabels(pool)),
+		Activity:   board.NewActivityService(postgres.NewActivity(pool)),
+		Streams:    board.NewStreamService(hub),
+	}
 	return &dbEnv{
-		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks,
-		router: NewRouter(Deps{
-			Health:     pool,
-			Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
-			Authorizer: workspace.NewAuthorizer(postgres.NewWorkspaces(pool)),
-			Workspaces: workspace.NewService(postgres.NewWorkspaces(pool), txm, events.Noop{}),
-			Boards:     boards,
-			Tasks:      tasks,
-			Labels:     board.NewLabelService(postgres.NewLabels(pool)),
-			Activity:   board.NewActivityService(postgres.NewActivity(pool)),
-		}),
+		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks, hub: hub,
+		deps: deps, router: NewRouter(deps),
 	}
 }
 

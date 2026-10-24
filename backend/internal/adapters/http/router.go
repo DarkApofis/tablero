@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	appauth "github.com/DarkApofis/tablero/backend/internal/app/auth"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
@@ -21,6 +22,11 @@ type Deps struct {
 	Tasks        *task.Service
 	Labels       *board.LabelService
 	Activity     *board.ActivityService
+	Streams      *board.StreamService
+	// StreamHeartbeat is how often the event stream sends ": ping"
+	// (default 25s); StreamWriteTimeout bounds each of its writes (default 10s).
+	StreamHeartbeat    time.Duration
+	StreamWriteTimeout time.Duration
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
@@ -61,6 +67,15 @@ func NewRouter(d Deps) http.Handler {
 
 	ach := &activityHandler{activity: d.Activity}
 	mux.Handle("GET /boards/{id}/activity", guarded(bh.boardWorkspace, domain.ActionRead, ach.list))
+
+	eh := &eventsHandler{streams: d.Streams, authz: d.Authorizer, heartbeat: d.StreamHeartbeat, writeTimeout: d.StreamWriteTimeout}
+	if eh.heartbeat <= 0 {
+		eh.heartbeat = defaultHeartbeat
+	}
+	if eh.writeTimeout <= 0 {
+		eh.writeTimeout = defaultStreamWriteTimeout
+	}
+	mux.Handle("GET /boards/{id}/events", requireStreamAuth(d.Auth, requireAccess(d.Authorizer, domain.ActionRead, bh.boardWorkspace, http.HandlerFunc(eh.stream))))
 
 	lh := &labelHandler{labels: d.Labels}
 	mux.Handle("GET /boards/{id}/labels", guarded(bh.boardWorkspace, domain.ActionRead, lh.list))
