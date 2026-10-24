@@ -67,7 +67,7 @@ FOR KEY SHARE;
 -- in the workspace, bumping each version as any edit does, and logs one
 -- task_updated entry per task with the same payload shape the service writes
 -- (service.TaskUpdatedPayload).
--- name: UnassignMemberTasks :execrows
+-- name: UnassignMemberTasks :many
 WITH unassigned AS (
     UPDATE tasks t
     SET assignee_id = NULL,
@@ -88,4 +88,5 @@ SELECT @workspace_id::uuid, u.board_id, @actor_id::uuid, 'task_updated',
            'changes', jsonb_build_object(
                'assignee_id', jsonb_build_object('from', @user_id::uuid, 'to', NULL))
        )
-FROM unassigned u;
+FROM unassigned u
+RETURNING *;

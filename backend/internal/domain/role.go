@@ -1,12 +1,21 @@
-package auth
+package domain
 
-import (
-	"context"
+// Role is a member's role within a workspace.
+type Role string
 
-	"github.com/google/uuid"
-
-	"github.com/DarkApofis/tablero/backend/internal/db"
+const (
+	RoleAdmin  Role = "admin"
+	RoleMember Role = "member"
+	RoleViewer Role = "viewer"
 )
+
+func (r Role) Valid() bool {
+	switch r {
+	case RoleAdmin, RoleMember, RoleViewer:
+		return true
+	}
+	return false
+}
 
 // Action is something a workspace member may be allowed to do.
 type Action int
@@ -45,8 +54,8 @@ func (a Action) String() string {
 }
 
 // permissions is the role matrix. Anything not listed is denied.
-var permissions = map[db.WorkspaceRole]map[Action]bool{
-	db.WorkspaceRoleAdmin: {
+var permissions = map[Role]map[Action]bool{
+	RoleAdmin: {
 		ActionRead:           true,
 		ActionEditTasks:      true,
 		ActionManageMembers:  true,
@@ -55,46 +64,35 @@ var permissions = map[db.WorkspaceRole]map[Action]bool{
 		ActionManageBoards: true,
 		ActionManageLabels: true,
 	},
-	db.WorkspaceRoleMember: {
+	RoleMember: {
 		ActionRead:      true,
 		ActionEditTasks: true,
 		// Labels are part of working with tasks, not of the board's structure.
 		ActionManageLabels: true,
 	},
-	db.WorkspaceRoleViewer: {
+	RoleViewer: {
 		ActionRead: true,
 	},
 }
 
 // Can reports whether role may perform action.
-func Can(role db.WorkspaceRole, action Action) bool {
+func Can(role Role, action Action) bool {
 	return permissions[role][action]
 }
 
-type (
-	roleCtxKey        struct{}
-	workspaceIDCtxKey struct{}
-)
-
-// WithWorkspaceID stores the workspace the request was authorized against.
-func WithWorkspaceID(ctx context.Context, id uuid.UUID) context.Context {
-	return context.WithValue(ctx, workspaceIDCtxKey{}, id)
+// Access is a user's standing in one workspace, as established by the
+// workspace authorizer (app/workspace.Authorizer). Every use case on
+// workspace resources takes one and checks the action it needs with Require.
+type Access struct {
+	UserID      ID
+	WorkspaceID ID
+	Role        Role
 }
 
-// WorkspaceID returns the workspace the request was authorized against.
-func WorkspaceID(ctx context.Context) (uuid.UUID, bool) {
-	id, ok := ctx.Value(workspaceIDCtxKey{}).(uuid.UUID)
-	return id, ok
-}
-
-// WithWorkspaceRole stores the caller's role in the current workspace.
-func WithWorkspaceRole(ctx context.Context, role db.WorkspaceRole) context.Context {
-	return context.WithValue(ctx, roleCtxKey{}, role)
-}
-
-// WorkspaceRole returns the caller's role in the workspace of the request, if
-// the route went through the workspace authorization middleware.
-func WorkspaceRole(ctx context.Context) (db.WorkspaceRole, bool) {
-	role, ok := ctx.Value(roleCtxKey{}).(db.WorkspaceRole)
-	return role, ok
+// Require returns ErrForbidden unless the role allows action.
+func (a Access) Require(action Action) error {
+	if !Can(a.Role, action) {
+		return ErrForbidden
+	}
+	return nil
 }

@@ -19,8 +19,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
+	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/db"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
@@ -52,7 +54,8 @@ func newDBEnv(t *testing.T) *dbEnv {
 		router: NewRouter(Deps{
 			Health:     pool,
 			Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
-			Workspaces: service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
+			Authorizer: workspace.NewAuthorizer(postgres.NewWorkspaces(pool)),
+			Workspaces: workspace.NewService(postgres.NewWorkspaces(pool), postgres.NewTxManager(pool), events.Noop{}),
 			Boards:     boards,
 			Tasks:      tasks,
 			Labels:     service.NewLabelService(pool),

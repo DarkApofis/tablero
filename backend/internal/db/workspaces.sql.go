@@ -243,7 +243,7 @@ func (q *Queries) LockWorkspace(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-const unassignMemberTasks = `-- name: UnassignMemberTasks :execrows
+const unassignMemberTasks = `-- name: UnassignMemberTasks :many
 WITH unassigned AS (
     UPDATE tasks t
     SET assignee_id = NULL,
@@ -265,6 +265,7 @@ SELECT $1::uuid, u.board_id, $2::uuid, 'task_updated',
                'assignee_id', jsonb_build_object('from', $3::uuid, 'to', NULL))
        )
 FROM unassigned u
+RETURNING id, workspace_id, board_id, actor_id, type, payload, created_at
 `
 
 type UnassignMemberTasksParams struct {
@@ -277,12 +278,32 @@ type UnassignMemberTasksParams struct {
 // in the workspace, bumping each version as any edit does, and logs one
 // task_updated entry per task with the same payload shape the service writes
 // (service.TaskUpdatedPayload).
-func (q *Queries) UnassignMemberTasks(ctx context.Context, arg UnassignMemberTasksParams) (int64, error) {
-	result, err := q.db.Exec(ctx, unassignMemberTasks, arg.WorkspaceID, arg.ActorID, arg.UserID)
+func (q *Queries) UnassignMemberTasks(ctx context.Context, arg UnassignMemberTasksParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, unassignMemberTasks, arg.WorkspaceID, arg.ActorID, arg.UserID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []ActivityLog
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.BoardID,
+			&i.ActorID,
+			&i.Type,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateMemberRole = `-- name: UpdateMemberRole :execrows

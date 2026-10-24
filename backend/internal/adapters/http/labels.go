@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -28,12 +29,13 @@ type labelHandler struct {
 }
 
 // labelWorkspace resolves /labels/{id} to its workspace for requireAccess.
-func (h *labelHandler) labelWorkspace(r *http.Request) (uuid.UUID, error) {
+func (h *labelHandler) labelWorkspace(r *http.Request) (domain.ID, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return uuid.Nil, err
+		return domain.NilID, err
 	}
-	return h.labels.WorkspaceOfLabel(r.Context(), id)
+	ws, err := h.labels.WorkspaceOfLabel(r.Context(), uuid.UUID(id))
+	return domain.ID(ws), err
 }
 
 // list: GET /boards/{id}/labels, ordered by name.

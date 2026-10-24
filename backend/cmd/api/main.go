@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/hasher"
 	httpapi "github.com/DarkApofis/tablero/backend/internal/adapters/http"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/app/auth"
+	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
@@ -53,7 +55,12 @@ func run() error {
 	defer pool.Close()
 	slog.Info("database connected")
 
+	tx := postgres.NewTxManager(pool)
+	// Phase 2 replaces it with the SSE broadcaster.
+	publisher := events.Noop{}
+
 	users := postgres.NewUsers(pool)
+	workspaces := postgres.NewWorkspaces(pool)
 	authService, err := auth.NewService(users, users, hasher.Argon2id{},
 		token.NewIssuer(cfg.JWTSecret, cfg.AccessTokenTTL), systemClock{}, cfg.RefreshTokenTTL)
 	if err != nil {
@@ -67,7 +74,8 @@ func run() error {
 			CookieSecure: cfg.CookieSecure,
 			Health:       pool,
 			Auth:         authService,
-			Workspaces:   service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
+			Authorizer:   workspace.NewAuthorizer(workspaces),
+			Workspaces:   workspace.NewService(workspaces, tx, publisher),
 			Boards:       service.NewBoardService(pool),
 			Tasks:        service.NewTaskService(pool),
 			Labels:       service.NewLabelService(pool),

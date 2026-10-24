@@ -12,123 +12,121 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
-	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
-// fakeWorkspaceStore is an in-memory service.WorkspaceStore. InTx runs fn
-// directly: the service does all its checks before writing, so a failed
-// operation leaves nothing to roll back.
+// fakeWorkspaceStore is an in-memory workspace.WorkspaceRepository. Its
+// transactions (fakeTx) run fn directly: the use cases do all their checks
+// before writing, so a failed operation leaves nothing to roll back.
 type fakeWorkspaceStore struct {
 	users      *fakeStore
-	workspaces map[uuid.UUID]db.Workspace
-	members    []db.WorkspaceMember // insertion order = join order
+	workspaces map[domain.ID]domain.Workspace
+	members    []fakeMember // insertion order = join order
 }
+
+type fakeMember struct {
+	workspaceID, userID domain.ID
+	role                domain.Role
+	joinedAt            time.Time
+}
+
+type fakeTx struct{}
+
+func (fakeTx) InTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
 func newFakeWorkspaceStore(users *fakeStore) *fakeWorkspaceStore {
-	return &fakeWorkspaceStore{users: users, workspaces: map[uuid.UUID]db.Workspace{}}
+	return &fakeWorkspaceStore{users: users, workspaces: map[domain.ID]domain.Workspace{}}
 }
 
-func (f *fakeWorkspaceStore) InTx(_ context.Context, fn func(q service.WorkspaceQueries) error) error {
-	return fn(f)
-}
-
-func (f *fakeWorkspaceStore) CreateWorkspace(_ context.Context, name string) (db.Workspace, error) {
-	ws := db.Workspace{ID: uuid.New(), Name: name, CreatedAt: time.Now()}
+func (f *fakeWorkspaceStore) Create(_ context.Context, name string) (domain.Workspace, error) {
+	ws := domain.Workspace{ID: domain.NewID(), Name: name, CreatedAt: time.Now()}
 	f.workspaces[ws.ID] = ws
 	return ws, nil
 }
 
-func (f *fakeWorkspaceStore) AddWorkspaceMember(_ context.Context, p db.AddWorkspaceMemberParams) error {
-	f.members = append(f.members, db.WorkspaceMember{WorkspaceID: p.WorkspaceID, UserID: p.UserID, Role: p.Role, CreatedAt: time.Now()})
+func (f *fakeWorkspaceStore) AddMember(_ context.Context, wsID, userID domain.ID, role domain.Role) error {
+	f.members = append(f.members, fakeMember{workspaceID: wsID, userID: userID, role: role, joinedAt: time.Now()})
 	return nil
 }
 
-func (f *fakeWorkspaceStore) ListWorkspacesForUser(_ context.Context, userID uuid.UUID) ([]db.ListWorkspacesForUserRow, error) {
-	var rows []db.ListWorkspacesForUserRow
+func (f *fakeWorkspaceStore) ListForUser(_ context.Context, userID domain.ID) ([]domain.WorkspaceSummary, error) {
+	var rows []domain.WorkspaceSummary
 	for _, m := range f.members {
-		if m.UserID != userID {
-			continue
-		}
-		ws := f.workspaces[m.WorkspaceID]
-		rows = append(rows, db.ListWorkspacesForUserRow{
-			ID: ws.ID, Name: ws.Name, CreatedAt: ws.CreatedAt, Role: m.Role, MemberCount: f.count(ws.ID, ""),
-		})
-	}
-	return rows, nil
-}
-
-func (f *fakeWorkspaceStore) GetMemberRole(_ context.Context, p db.GetMemberRoleParams) (db.WorkspaceRole, error) {
-	i := f.find(p.WorkspaceID, p.UserID)
-	if i < 0 {
-		return "", pgx.ErrNoRows
-	}
-	return f.members[i].Role, nil
-}
-
-func (f *fakeWorkspaceStore) ListWorkspaceMembers(_ context.Context, wsID uuid.UUID) ([]db.ListWorkspaceMembersRow, error) {
-	var rows []db.ListWorkspaceMembersRow
-	for _, m := range f.members {
-		if m.WorkspaceID == wsID {
-			u := f.users.users[domain.ID(m.UserID)]
-			rows = append(rows, db.ListWorkspaceMembersRow{UserID: m.UserID, Email: u.Email, Name: u.Name, Role: m.Role, CreatedAt: m.CreatedAt})
+		if m.userID == userID {
+			rows = append(rows, domain.WorkspaceSummary{Workspace: f.workspaces[m.workspaceID], Role: m.role, MemberCount: f.count(m.workspaceID, "")})
 		}
 	}
 	return rows, nil
 }
 
-func (f *fakeWorkspaceStore) GetWorkspaceMember(_ context.Context, p db.GetWorkspaceMemberParams) (db.GetWorkspaceMemberRow, error) {
-	i := f.find(p.WorkspaceID, p.UserID)
+func (f *fakeWorkspaceStore) Role(_ context.Context, wsID, userID domain.ID) (domain.Role, error) {
+	i := f.find(wsID, userID)
 	if i < 0 {
-		return db.GetWorkspaceMemberRow{}, pgx.ErrNoRows
+		return "", domain.ErrNotMember
 	}
-	m, u := f.members[i], f.users.users[domain.ID(p.UserID)]
-	return db.GetWorkspaceMemberRow{UserID: m.UserID, Email: u.Email, Name: u.Name, Role: m.Role, CreatedAt: m.CreatedAt}, nil
+	return f.members[i].role, nil
 }
 
-func (f *fakeWorkspaceStore) LockWorkspace(context.Context, uuid.UUID) error { return nil }
-
-func (f *fakeWorkspaceStore) CountWorkspaceAdmins(_ context.Context, wsID uuid.UUID) (int64, error) {
-	return f.count(wsID, db.WorkspaceRoleAdmin), nil
+func (f *fakeWorkspaceStore) member(m fakeMember) domain.Member {
+	u := f.users.users[m.userID]
+	return domain.Member{UserID: m.userID, Email: u.Email, Name: u.Name, Role: m.role, JoinedAt: m.joinedAt}
 }
 
-func (f *fakeWorkspaceStore) UpdateMemberRole(_ context.Context, p db.UpdateMemberRoleParams) (int64, error) {
-	i := f.find(p.WorkspaceID, p.UserID)
-	if i < 0 {
-		return 0, nil
+func (f *fakeWorkspaceStore) Members(_ context.Context, wsID domain.ID) ([]domain.Member, error) {
+	var rows []domain.Member
+	for _, m := range f.members {
+		if m.workspaceID == wsID {
+			rows = append(rows, f.member(m))
+		}
 	}
-	f.members[i].Role = p.Role
-	return 1, nil
+	return rows, nil
 }
 
-func (f *fakeWorkspaceStore) DeleteWorkspaceMember(_ context.Context, p db.DeleteWorkspaceMemberParams) (int64, error) {
-	i := f.find(p.WorkspaceID, p.UserID)
+func (f *fakeWorkspaceStore) Member(_ context.Context, wsID, userID domain.ID) (domain.Member, error) {
+	i := f.find(wsID, userID)
 	if i < 0 {
-		return 0, nil
+		return domain.Member{}, domain.ErrMemberNotFound
 	}
-	f.members = slices.Delete(f.members, i, i+1)
-	return 1, nil
+	return f.member(f.members[i]), nil
+}
+
+func (f *fakeWorkspaceStore) Lock(context.Context, domain.ID) error { return nil }
+
+func (f *fakeWorkspaceStore) CountAdmins(_ context.Context, wsID domain.ID) (int64, error) {
+	return f.count(wsID, domain.RoleAdmin), nil
+}
+
+func (f *fakeWorkspaceStore) UpdateRole(_ context.Context, wsID, userID domain.ID, role domain.Role) error {
+	if i := f.find(wsID, userID); i >= 0 {
+		f.members[i].role = role
+	}
+	return nil
+}
+
+func (f *fakeWorkspaceStore) RemoveMember(_ context.Context, wsID, userID domain.ID) error {
+	if i := f.find(wsID, userID); i >= 0 {
+		f.members = slices.Delete(f.members, i, i+1)
+	}
+	return nil
 }
 
 // The fake has no tasks to unassign.
-func (f *fakeWorkspaceStore) UnassignMemberTasks(context.Context, db.UnassignMemberTasksParams) (int64, error) {
-	return 0, nil
+func (f *fakeWorkspaceStore) UnassignTasks(context.Context, domain.ID, domain.ID, domain.ID) ([]domain.ActivityEntry, error) {
+	return nil, nil
 }
 
-func (f *fakeWorkspaceStore) find(wsID, userID uuid.UUID) int {
-	return slices.IndexFunc(f.members, func(m db.WorkspaceMember) bool {
-		return m.WorkspaceID == wsID && m.UserID == userID
-	})
+func (f *fakeWorkspaceStore) find(wsID, userID domain.ID) int {
+	return slices.IndexFunc(f.members, func(m fakeMember) bool { return m.workspaceID == wsID && m.userID == userID })
 }
 
-func (f *fakeWorkspaceStore) count(wsID uuid.UUID, role db.WorkspaceRole) int64 {
+func (f *fakeWorkspaceStore) count(wsID domain.ID, role domain.Role) int64 {
 	var n int64
 	for _, m := range f.members {
-		if m.WorkspaceID == wsID && (role == "" || m.Role == role) {
+		if m.workspaceID == wsID && (role == "" || m.role == role) {
 			n++
 		}
 	}
@@ -143,19 +141,20 @@ type wsEnv struct {
 	tokens *token.Issuer
 	users  *fakeStore
 	store  *fakeWorkspaceStore
-	svc    *service.WorkspaceService
+	svc    *workspace.Service
 }
 
 func newWSEnv(t *testing.T) *wsEnv {
 	users := newFakeStore()
 	store := newFakeWorkspaceStore(users)
 	tokens := token.NewIssuer(testSecret, 15*time.Minute)
-	svc := service.NewWorkspaceService(store)
+	svc := workspace.NewService(store, fakeTx{}, events.Noop{})
 	return &wsEnv{
 		t: t, tokens: tokens, users: users, store: store, svc: svc,
 		router: NewRouter(Deps{
 			Health:     fakePinger{},
 			Auth:       newAuthService(users, tokens, time.Hour),
+			Authorizer: workspace.NewAuthorizer(store),
 			Workspaces: svc,
 		}),
 	}
@@ -180,13 +179,13 @@ func (e *wsEnv) user(name string) testUser {
 	return testUser{ID: uuid.UUID(u.ID), Token: token}
 }
 
-func (e *wsEnv) workspace(members map[testUser]db.WorkspaceRole) uuid.UUID {
+func (e *wsEnv) workspace(members map[testUser]domain.Role) uuid.UUID {
 	e.t.Helper()
-	ws, _ := e.store.CreateWorkspace(context.Background(), "Equipo")
+	ws, _ := e.store.Create(context.Background(), "Equipo")
 	for u, role := range members {
-		_ = e.store.AddWorkspaceMember(context.Background(), db.AddWorkspaceMemberParams{WorkspaceID: ws.ID, UserID: u.ID, Role: role})
+		_ = e.store.AddMember(context.Background(), ws.ID, domain.ID(u.ID), role)
 	}
-	return ws.ID
+	return uuid.UUID(ws.ID)
 }
 
 func (e *wsEnv) do(method, path, body string, as testUser) *httptest.ResponseRecorder {
@@ -199,14 +198,13 @@ func (e *wsEnv) do(method, path, body string, as testUser) *httptest.ResponseRec
 	return rec
 }
 
-func (e *wsEnv) role(wsID uuid.UUID, u testUser) db.WorkspaceRole {
-	role, err := e.store.GetMemberRole(context.Background(), db.GetMemberRoleParams{WorkspaceID: wsID, UserID: u.ID})
-	if errors.Is(err, pgx.ErrNoRows) {
+func (e *wsEnv) role(wsID uuid.UUID, u testUser) domain.Role {
+	role, err := e.store.Role(context.Background(), domain.ID(wsID), domain.ID(u.ID))
+	if errors.Is(err, domain.ErrNotMember) {
 		return ""
 	}
 	return role
 }
-
 func membersPath(wsID uuid.UUID) string { return "/workspaces/" + wsID.String() + "/members" }
 func memberPath(wsID, userID uuid.UUID) string {
 	return membersPath(wsID) + "/" + userID.String()
@@ -256,9 +254,9 @@ func TestWorkspacePermissionMatrix(t *testing.T) {
 					"viewer": e.user("Viewer"), "outsider": e.user("Outsider"),
 				}
 				target := e.user("Target")
-				ws := e.workspace(map[testUser]db.WorkspaceRole{
-					actors["admin"]: db.WorkspaceRoleAdmin, actors["member"]: db.WorkspaceRoleMember,
-					actors["viewer"]: db.WorkspaceRoleViewer, target: db.WorkspaceRoleMember,
+				ws := e.workspace(map[testUser]domain.Role{
+					actors["admin"]: domain.RoleAdmin, actors["member"]: domain.RoleMember,
+					actors["viewer"]: domain.RoleViewer, target: domain.RoleMember,
 				})
 
 				rec := e.do(ep.method, ep.path(ws, target.ID), ep.body, actors[actorName])
@@ -271,7 +269,7 @@ func TestWorkspacePermissionMatrix(t *testing.T) {
 					if got := decodeError(t, rec); got.Code != CodeForbidden || got.Message != want.message {
 						t.Errorf("error = %+v, want message %q", got, want.message)
 					}
-					if e.role(ws, target) != db.WorkspaceRoleMember {
+					if e.role(ws, target) != domain.RoleMember {
 						t.Error("a forbidden request changed the target's membership")
 					}
 				}
@@ -297,7 +295,7 @@ func TestWorkspaceRoutesRequireAuth(t *testing.T) {
 func TestNonMemberCannotProbeWorkspaceExistence(t *testing.T) {
 	e := newWSEnv(t)
 	admin, outsider := e.user("Admin"), e.user("Outsider")
-	existing := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin})
+	existing := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin})
 
 	for _, ep := range []struct {
 		method, body string
@@ -337,10 +335,10 @@ func TestCreateWorkspaceMakesCreatorAdmin(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "Producto" || got.Role != db.WorkspaceRoleAdmin || got.MemberCount != 1 {
+	if got.Name != "Producto" || got.Role != domain.RoleAdmin || got.MemberCount != 1 {
 		t.Errorf("workspace = %+v", got)
 	}
-	if role := e.role(got.ID, ana); role != db.WorkspaceRoleAdmin {
+	if role := e.role(got.ID, ana); role != domain.RoleAdmin {
 		t.Errorf("creator role in store = %q, want admin", role)
 	}
 }
@@ -364,9 +362,9 @@ func TestCreateWorkspaceValidation(t *testing.T) {
 func TestListWorkspacesShowsMyRoleAndMemberCount(t *testing.T) {
 	e := newWSEnv(t)
 	ana, beto, carla := e.user("Ana"), e.user("Beto"), e.user("Carla")
-	e.workspace(map[testUser]db.WorkspaceRole{ana: db.WorkspaceRoleAdmin, beto: db.WorkspaceRoleViewer, carla: db.WorkspaceRoleMember})
-	e.workspace(map[testUser]db.WorkspaceRole{beto: db.WorkspaceRoleAdmin})
-	e.workspace(map[testUser]db.WorkspaceRole{carla: db.WorkspaceRoleAdmin}) // Beto is not in this one
+	e.workspace(map[testUser]domain.Role{ana: domain.RoleAdmin, beto: domain.RoleViewer, carla: domain.RoleMember})
+	e.workspace(map[testUser]domain.Role{beto: domain.RoleAdmin})
+	e.workspace(map[testUser]domain.Role{carla: domain.RoleAdmin}) // Beto is not in this one
 
 	rec := e.do("GET", "/workspaces", "", beto)
 	if rec.Code != http.StatusOK {
@@ -379,12 +377,12 @@ func TestListWorkspacesShowsMyRoleAndMemberCount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := map[db.WorkspaceRole]int64{}
+	got := map[domain.Role]int64{}
 	for _, w := range body.Workspaces {
 		got[w.Role] = w.MemberCount
 	}
-	want := map[db.WorkspaceRole]int64{db.WorkspaceRoleViewer: 3, db.WorkspaceRoleAdmin: 1}
-	if len(body.Workspaces) != 2 || got[db.WorkspaceRoleViewer] != want[db.WorkspaceRoleViewer] || got[db.WorkspaceRoleAdmin] != want[db.WorkspaceRoleAdmin] {
+	want := map[domain.Role]int64{domain.RoleViewer: 3, domain.RoleAdmin: 1}
+	if len(body.Workspaces) != 2 || got[domain.RoleViewer] != want[domain.RoleViewer] || got[domain.RoleAdmin] != want[domain.RoleAdmin] {
 		t.Errorf("workspaces = %+v", body.Workspaces)
 	}
 }
@@ -402,7 +400,7 @@ func TestListWorkspacesEmptyIsArray(t *testing.T) {
 func TestChangeRole(t *testing.T) {
 	e := newWSEnv(t)
 	admin, bob := e.user("Admin"), e.user("Bob")
-	ws := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin, bob: db.WorkspaceRoleMember})
+	ws := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin, bob: domain.RoleMember})
 
 	rec := e.do("PATCH", memberPath(ws, bob.ID), `{"role":"admin"}`, admin)
 	if rec.Code != http.StatusOK {
@@ -410,10 +408,10 @@ func TestChangeRole(t *testing.T) {
 	}
 	var m memberResponse
 	_ = json.NewDecoder(rec.Body).Decode(&m)
-	if m.UserID != bob.ID || m.Role != db.WorkspaceRoleAdmin || m.Email != "bob@example.com" {
+	if m.UserID != bob.ID || m.Role != domain.RoleAdmin || m.Email != "bob@example.com" {
 		t.Errorf("member = %+v", m)
 	}
-	if e.role(ws, bob) != db.WorkspaceRoleAdmin {
+	if e.role(ws, bob) != domain.RoleAdmin {
 		t.Error("role not persisted")
 	}
 }
@@ -421,7 +419,7 @@ func TestChangeRole(t *testing.T) {
 func TestChangeRoleErrors(t *testing.T) {
 	e := newWSEnv(t)
 	admin, bob, stranger := e.user("Admin"), e.user("Bob"), e.user("Stranger")
-	ws := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin, bob: db.WorkspaceRoleMember})
+	ws := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin, bob: domain.RoleMember})
 
 	tests := []struct {
 		name       string
@@ -445,7 +443,7 @@ func TestChangeRoleErrors(t *testing.T) {
 			}
 		})
 	}
-	if e.role(ws, bob) != db.WorkspaceRoleMember {
+	if e.role(ws, bob) != domain.RoleMember {
 		t.Error("failed requests changed Bob's role")
 	}
 }
@@ -453,7 +451,7 @@ func TestChangeRoleErrors(t *testing.T) {
 func TestRemoveMember(t *testing.T) {
 	e := newWSEnv(t)
 	admin, bob := e.user("Admin"), e.user("Bob")
-	ws := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin, bob: db.WorkspaceRoleViewer})
+	ws := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin, bob: domain.RoleViewer})
 
 	if rec := e.do("DELETE", memberPath(ws, bob.ID), "", admin); rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d; body = %s", rec.Code, rec.Body)
@@ -476,7 +474,7 @@ func TestWorkspaceKeepsAtLeastOneAdmin(t *testing.T) {
 	t.Run("sole admin cannot demote themselves", func(t *testing.T) {
 		e := newWSEnv(t)
 		admin, bob := e.user("Admin"), e.user("Bob")
-		ws := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin, bob: db.WorkspaceRoleMember})
+		ws := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin, bob: domain.RoleMember})
 
 		for _, role := range []string{"member", "viewer"} {
 			rec := e.do("PATCH", memberPath(ws, admin.ID), `{"role":"`+role+`"}`, admin)
@@ -487,7 +485,7 @@ func TestWorkspaceKeepsAtLeastOneAdmin(t *testing.T) {
 				t.Errorf("error = %+v", got)
 			}
 		}
-		if e.role(ws, admin) != db.WorkspaceRoleAdmin {
+		if e.role(ws, admin) != domain.RoleAdmin {
 			t.Error("sole admin was demoted")
 		}
 	})
@@ -495,7 +493,7 @@ func TestWorkspaceKeepsAtLeastOneAdmin(t *testing.T) {
 	t.Run("sole admin can keep the admin role", func(t *testing.T) {
 		e := newWSEnv(t)
 		admin := e.user("Admin")
-		ws := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin})
+		ws := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin})
 		if rec := e.do("PATCH", memberPath(ws, admin.ID), `{"role":"admin"}`, admin); rec.Code != http.StatusOK {
 			t.Errorf("status = %d, want 200", rec.Code)
 		}
@@ -504,13 +502,13 @@ func TestWorkspaceKeepsAtLeastOneAdmin(t *testing.T) {
 	t.Run("sole admin cannot be removed", func(t *testing.T) {
 		e := newWSEnv(t)
 		admin := e.user("Admin")
-		ws := e.workspace(map[testUser]db.WorkspaceRole{admin: db.WorkspaceRoleAdmin})
+		ws := e.workspace(map[testUser]domain.Role{admin: domain.RoleAdmin})
 
 		rec := e.do("DELETE", memberPath(ws, admin.ID), "", admin)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("status = %d, want 409", rec.Code)
 		}
-		if e.role(ws, admin) != db.WorkspaceRoleAdmin {
+		if e.role(ws, admin) != domain.RoleAdmin {
 			t.Error("sole admin was removed")
 		}
 	})
@@ -518,7 +516,7 @@ func TestWorkspaceKeepsAtLeastOneAdmin(t *testing.T) {
 	t.Run("with two admins one can step down, then the other cannot", func(t *testing.T) {
 		e := newWSEnv(t)
 		ana, beto := e.user("Ana"), e.user("Beto")
-		ws := e.workspace(map[testUser]db.WorkspaceRole{ana: db.WorkspaceRoleAdmin, beto: db.WorkspaceRoleAdmin})
+		ws := e.workspace(map[testUser]domain.Role{ana: domain.RoleAdmin, beto: domain.RoleAdmin})
 
 		if rec := e.do("PATCH", memberPath(ws, beto.ID), `{"role":"member"}`, ana); rec.Code != http.StatusOK {
 			t.Fatalf("demote Beto: status = %d, body = %s", rec.Code, rec.Body)
@@ -531,37 +529,40 @@ func TestWorkspaceKeepsAtLeastOneAdmin(t *testing.T) {
 	t.Run("an admin can leave when another admin remains", func(t *testing.T) {
 		e := newWSEnv(t)
 		ana, beto := e.user("Ana"), e.user("Beto")
-		ws := e.workspace(map[testUser]db.WorkspaceRole{ana: db.WorkspaceRoleAdmin, beto: db.WorkspaceRoleAdmin})
+		ws := e.workspace(map[testUser]domain.Role{ana: domain.RoleAdmin, beto: domain.RoleAdmin})
 
 		if rec := e.do("DELETE", memberPath(ws, ana.ID), "", ana); rec.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
-		if n, _ := e.store.CountWorkspaceAdmins(context.Background(), ws); n != 1 {
+		if n, _ := e.store.CountAdmins(context.Background(), domain.ID(ws)); n != 1 {
 			t.Errorf("admins = %d, want 1", n)
 		}
 	})
 }
 
-// The middleware authorizes before the transaction; the service must re-check
-// under the lock in case the actor was demoted in between.
+// The middleware authorizes before the transaction; the use case must re-check
+// under the lock in case the actor was demoted in between. The Access below
+// is stale: it says admin, but Beto is a member by now.
 func TestServiceRechecksActorRoleInsideTransaction(t *testing.T) {
 	e := newWSEnv(t)
 	ana, beto, carla := e.user("Ana"), e.user("Beto"), e.user("Carla")
-	ws := e.workspace(map[testUser]db.WorkspaceRole{
-		ana: db.WorkspaceRoleAdmin, beto: db.WorkspaceRoleMember, carla: db.WorkspaceRoleMember,
+	ws := e.workspace(map[testUser]domain.Role{
+		ana: domain.RoleAdmin, beto: domain.RoleMember, carla: domain.RoleMember,
 	})
 	ctx := context.Background()
+	stale := domain.Access{UserID: domain.ID(beto.ID), WorkspaceID: domain.ID(ws), Role: domain.RoleAdmin}
+	outsider := domain.Access{UserID: domain.NewID(), WorkspaceID: domain.ID(ws), Role: domain.RoleAdmin}
 
-	if _, err := e.svc.ChangeRole(ctx, ws, beto.ID, carla.ID, db.WorkspaceRoleViewer); !errors.Is(err, service.ErrForbidden) {
+	if _, err := e.svc.ChangeRole(ctx, stale, domain.ID(carla.ID), domain.RoleViewer); !errors.Is(err, domain.ErrForbidden) {
 		t.Errorf("ChangeRole by member: err = %v, want ErrForbidden", err)
 	}
-	if err := e.svc.RemoveMember(ctx, ws, beto.ID, carla.ID); !errors.Is(err, service.ErrForbidden) {
+	if err := e.svc.RemoveMember(ctx, stale, domain.ID(carla.ID)); !errors.Is(err, domain.ErrForbidden) {
 		t.Errorf("RemoveMember by member: err = %v, want ErrForbidden", err)
 	}
-	if err := e.svc.RemoveMember(ctx, ws, uuid.New(), carla.ID); !errors.Is(err, service.ErrNotMember) {
+	if err := e.svc.RemoveMember(ctx, outsider, domain.ID(carla.ID)); !errors.Is(err, domain.ErrNotMember) {
 		t.Errorf("RemoveMember by outsider: err = %v, want ErrNotMember", err)
 	}
-	if e.role(ws, carla) != db.WorkspaceRoleMember {
+	if e.role(ws, carla) != domain.RoleMember {
 		t.Error("Carla's membership changed")
 	}
 }

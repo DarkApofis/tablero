@@ -12,6 +12,17 @@ var (
 	ErrNotFound = errors.New("not found")
 
 	ErrUserNotFound = fmt.Errorf("user %w", ErrNotFound)
+	// ErrMemberNotFound: the target user of a membership change is not a member.
+	ErrMemberNotFound = fmt.Errorf("member %w", ErrNotFound)
+
+	// ErrNotMember: the user does not belong to the workspace, or the resource
+	// (workspace, board, column, task, label) does not exist. Callers must not
+	// tell the two apart.
+	ErrNotMember = errors.New("not a member of the workspace")
+	// ErrForbidden: the user is a member but their role does not allow the action.
+	ErrForbidden = errors.New("action not allowed for role")
+	// ErrLastAdmin: the change would leave the workspace without an admin.
+	ErrLastAdmin = errors.New("workspace must keep at least one admin")
 
 	// ErrEmailTaken: an account with that email already exists.
 	ErrEmailTaken = errors.New("email already registered")

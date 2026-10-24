@@ -8,3 +8,6 @@ import "github.com/DarkApofis/tablero/backend/internal/domain"
 type ValidationError = domain.ValidationError
 
 const pgUniqueViolation = "23505"
+
+// ErrNotMember is the domain's: resolvers report missing resources with it.
+var ErrNotMember = domain.ErrNotMember

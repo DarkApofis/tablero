@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/auth"
 	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -79,7 +79,7 @@ type boardDetailResponse struct {
 	boardResponse
 	// Role is the caller's role in the board's workspace, so the client knows
 	// which actions to offer.
-	Role    db.WorkspaceRole          `json:"role"`
+	Role    domain.Role               `json:"role"`
 	Labels  []labelResponse           `json:"labels"`
 	Columns []columnWithTasksResponse `json:"columns"`
 }
@@ -95,20 +95,22 @@ type boardHandler struct {
 
 // boardWorkspace and columnWorkspace resolve /boards/{id} and /columns/{id}
 // to their workspace for requireAccess.
-func (h *boardHandler) boardWorkspace(r *http.Request) (uuid.UUID, error) {
+func (h *boardHandler) boardWorkspace(r *http.Request) (domain.ID, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return uuid.Nil, err
+		return domain.NilID, err
 	}
-	return h.boards.WorkspaceOfBoard(r.Context(), id)
+	ws, err := h.boards.WorkspaceOfBoard(r.Context(), uuid.UUID(id))
+	return domain.ID(ws), err
 }
 
-func (h *boardHandler) columnWorkspace(r *http.Request) (uuid.UUID, error) {
+func (h *boardHandler) columnWorkspace(r *http.Request) (domain.ID, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return uuid.Nil, err
+		return domain.NilID, err
 	}
-	return h.boards.WorkspaceOfColumn(r.Context(), id)
+	ws, err := h.boards.WorkspaceOfColumn(r.Context(), uuid.UUID(id))
+	return domain.ID(ws), err
 }
 
 // pathID is only called behind requireAccess, which already parsed {id}.
@@ -166,7 +168,7 @@ func (h *boardHandler) getBoard(w http.ResponseWriter, r *http.Request) {
 		writeBoardError(w, r, "get board", err)
 		return
 	}
-	role, _ := auth.WorkspaceRole(r.Context())
+	role := access(r).Role
 
 	resp := boardDetailResponse{
 		boardResponse: newBoardResponse(detail.Board),

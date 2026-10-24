@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -22,12 +23,13 @@ type taskHandler struct {
 	tasks *service.TaskService
 }
 
-func (h *taskHandler) taskWorkspace(r *http.Request) (uuid.UUID, error) {
+func (h *taskHandler) taskWorkspace(r *http.Request) (domain.ID, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return uuid.Nil, err
+		return domain.NilID, err
 	}
-	return h.tasks.WorkspaceOfTask(r.Context(), id)
+	ws, err := h.tasks.WorkspaceOfTask(r.Context(), uuid.UUID(id))
+	return domain.ID(ws), err
 }
 
 // create: POST /columns/{id}/tasks appends a task to the column.
