@@ -12,6 +12,61 @@ import (
 	"github.com/google/uuid"
 )
 
+type TaskPriority string
+
+const (
+	TaskPriorityLow    TaskPriority = "low"
+	TaskPriorityMedium TaskPriority = "medium"
+	TaskPriorityHigh   TaskPriority = "high"
+	TaskPriorityUrgent TaskPriority = "urgent"
+)
+
+func (e *TaskPriority) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = TaskPriority(s)
+	case string:
+		*e = TaskPriority(s)
+	default:
+		return fmt.Errorf("unsupported scan type for TaskPriority: %T", src)
+	}
+	return nil
+}
+
+type NullTaskPriority struct {
+	TaskPriority TaskPriority
+	Valid        bool // Valid is true if TaskPriority is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullTaskPriority) Scan(value interface{}) error {
+	if value == nil {
+		ns.TaskPriority, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.TaskPriority.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullTaskPriority) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.TaskPriority), nil
+}
+
+func (e TaskPriority) Valid() bool {
+	switch e {
+	case TaskPriorityLow,
+		TaskPriorityMedium,
+		TaskPriorityHigh,
+		TaskPriorityUrgent:
+		return true
+	}
+	return false
+}
+
 type WorkspaceRole string
 
 const (
@@ -90,6 +145,14 @@ type Column struct {
 	CreatedAt time.Time
 }
 
+type Label struct {
+	ID        uuid.UUID
+	BoardID   uuid.UUID
+	Name      string
+	Color     string
+	CreatedAt time.Time
+}
+
 type RefreshToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -109,6 +172,15 @@ type Task struct {
 	CreatedBy   uuid.NullUUID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Priority    TaskPriority
+	DueDate     *time.Time
+	AssigneeID  uuid.NullUUID
+	ArchivedAt  *time.Time
+}
+
+type TaskLabel struct {
+	TaskID  uuid.UUID
+	LabelID uuid.UUID
 }
 
 type User struct {

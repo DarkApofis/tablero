@@ -122,8 +122,8 @@ a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/db`.
 ## Estado
 
 Hecho: autenticación (registro, login, `/me`), workspaces y miembros con roles,
-boards, columnas y tareas con reordenamiento, concurrencia optimista y registro de
-actividad.
+boards, columnas y tareas con reordenamiento, concurrencia optimista, prioridad,
+fecha límite, responsable, archivado, etiquetas por tablero y registro de actividad.
 
 Pendiente: refresco y cierre de sesión (`/auth/refresh`, `/auth/logout`), invitar
 miembros, tiempo real con SSE ([decisión 3](docs/DECISIONS.md)) y la interfaz del

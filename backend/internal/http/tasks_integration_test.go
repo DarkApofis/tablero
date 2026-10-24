@@ -257,7 +257,7 @@ func TestUpdateTaskValidation(t *testing.T) {
 	}{
 		{"missing version", map[string]any{"title": "x"}, "version"},
 		{"version zero", map[string]any{"title": "x", "version": 0}, "version"},
-		{"nothing to change", map[string]any{"version": 1}, "title"},
+		{"nothing to change", map[string]any{"version": 1}, "body"},
 		{"empty title", map[string]any{"title": "  ", "version": 1}, "title"},
 		{"title too long", map[string]any{"title": strings.Repeat("a", 201), "version": 1}, "title"},
 		{"description too long", map[string]any{"description": strings.Repeat("a", 10_001), "version": 1}, "description"},

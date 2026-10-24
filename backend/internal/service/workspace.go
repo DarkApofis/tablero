@@ -41,6 +41,7 @@ type WorkspaceQueries interface {
 	CountWorkspaceAdmins(ctx context.Context, workspaceID uuid.UUID) (int64, error)
 	UpdateMemberRole(ctx context.Context, arg db.UpdateMemberRoleParams) (int64, error)
 	DeleteWorkspaceMember(ctx context.Context, arg db.DeleteWorkspaceMemberParams) (int64, error)
+	UnassignMemberTasks(ctx context.Context, arg db.UnassignMemberTasksParams) (int64, error)
 }
 
 // WorkspaceStore adds transactions on top of the queries.
@@ -160,7 +161,8 @@ func (s *WorkspaceService) ChangeRole(ctx context.Context, workspaceID, actorID,
 	return member, err
 }
 
-// RemoveMember deletes targetID from the workspace. It refuses to remove the last admin.
+// RemoveMember deletes targetID from the workspace and unassigns their tasks
+// there, since only members can be assignees. It refuses to remove the last admin.
 func (s *WorkspaceService) RemoveMember(ctx context.Context, workspaceID, actorID, targetID uuid.UUID) error {
 	return s.store.InTx(ctx, func(q WorkspaceQueries) error {
 		current, err := s.lockAndLoadTarget(ctx, q, workspaceID, actorID, targetID)
@@ -176,6 +178,13 @@ func (s *WorkspaceService) RemoveMember(ctx context.Context, workspaceID, actorI
 			WorkspaceID: workspaceID, UserID: targetID,
 		}); err != nil {
 			return fmt.Errorf("delete member: %w", err)
+		}
+		// After the delete: an assignment in flight holds the membership row
+		// (LockMembership), so the delete waits for it and this sees its task.
+		if _, err := q.UnassignMemberTasks(ctx, db.UnassignMemberTasksParams{
+			WorkspaceID: workspaceID, UserID: targetID, ActorID: actorID,
+		}); err != nil {
+			return fmt.Errorf("unassign tasks: %w", err)
 		}
 		return nil
 	})

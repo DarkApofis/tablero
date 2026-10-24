@@ -53,6 +53,7 @@ func newDBEnv(t *testing.T) *dbEnv {
 			Workspaces: service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 			Boards:     boards,
 			Tasks:      tasks,
+			Labels:     service.NewLabelService(pool),
 			Activity:   service.NewActivityService(pool),
 		}),
 	}
@@ -120,6 +121,7 @@ func (e *dbEnv) task(columnID uuid.UUID, title string, pos float64, by testUser)
 	e.t.Helper()
 	t, err := e.q.CreateTask(context.Background(), db.CreateTaskParams{
 		ColumnID: columnID, Title: title, Position: pos, CreatedBy: uuid.NullUUID{UUID: by.ID, Valid: true},
+		Priority: db.TaskPriorityMedium,
 	})
 	if err != nil {
 		e.t.Fatal(err)

@@ -3,10 +3,12 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/DarkApofis/tablero/backend/internal/auth"
+	"github.com/DarkApofis/tablero/backend/internal/db"
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
@@ -32,16 +34,26 @@ func (h *taskHandler) taskWorkspace(r *http.Request) (uuid.UUID, error) {
 // create: POST /columns/{id}/tasks appends a task to the column.
 func (h *taskHandler) create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
+		Title       string           `json:"title"`
+		Description string           `json:"description"`
+		Priority    *db.TaskPriority `json:"priority"`
+		DueDate     *string          `json:"due_date"`
+		AssigneeID  *uuid.UUID       `json:"assignee_id"`
+		LabelIDs    []uuid.UUID      `json:"label_ids"`
 	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	dueDate, ok := parseDueDate(w, req.DueDate)
+	if !ok {
 		return
 	}
 	userID, _ := auth.UserID(r.Context())
 
 	task, err := h.tasks.Create(r.Context(), service.CreateTaskInput{
-		ColumnID: pathID(r), Title: req.Title, Description: req.Description, CreatedBy: userID,
+		ColumnID: pathID(r), WorkspaceID: workspaceID(r),
+		Title: req.Title, Description: req.Description, Priority: req.Priority,
+		DueDate: dueDate, AssigneeID: req.AssigneeID, LabelIDs: req.LabelIDs, CreatedBy: userID,
 	})
 	if err != nil {
 		writeTaskError(w, r, "create task", err)
@@ -59,12 +71,18 @@ func (h *taskHandler) get(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newTaskResponse(task))
 }
 
-// update: PATCH /tasks/{id} with {"title"?, "description"?, "version"}.
+// update: PATCH /tasks/{id} with any of the editable fields and "version".
+// Omitted fields keep their value; null clears due_date and assignee_id.
 func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title       *string `json:"title"`
-		Description *string `json:"description"`
-		Version     *int32  `json:"version"`
+		Title       *string             `json:"title"`
+		Description *string             `json:"description"`
+		Priority    *db.TaskPriority    `json:"priority"`
+		DueDate     optional[string]    `json:"due_date"`
+		AssigneeID  optional[uuid.UUID] `json:"assignee_id"`
+		LabelIDs    *[]uuid.UUID        `json:"label_ids"`
+		Archived    *bool               `json:"archived"`
+		Version     *int32              `json:"version"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -72,10 +90,20 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 	if !requireVersion(w, req.Version) {
 		return
 	}
+	dueDate := service.Optional[time.Time]{Set: req.DueDate.Set}
+	if req.DueDate.Set {
+		var ok bool
+		if dueDate.Value, ok = parseDueDate(w, req.DueDate.Value); !ok {
+			return
+		}
+	}
 
 	actorID, _ := auth.UserID(r.Context())
 	task, err := h.tasks.Update(r.Context(), pathID(r), service.UpdateInput{
-		Title: req.Title, Description: req.Description, Version: *req.Version, ActorID: actorID,
+		Title: req.Title, Description: req.Description, Priority: req.Priority,
+		DueDate: dueDate, AssigneeID: service.Optional[uuid.UUID](req.AssigneeID),
+		LabelIDs: req.LabelIDs, Archived: req.Archived,
+		WorkspaceID: workspaceID(r), Version: *req.Version, ActorID: actorID,
 	})
 	if err != nil {
 		writeTaskError(w, r, "update task", err)
@@ -129,6 +157,20 @@ func requireVersion(w http.ResponseWriter, v *int32) bool {
 		return false
 	}
 	return true
+}
+
+// parseDueDate parses a YYYY-MM-DD date; nil stays nil. On failure it has
+// already written a 422 and returns false.
+func parseDueDate(w http.ResponseWriter, s *string) (*time.Time, bool) {
+	if s == nil {
+		return nil, true
+	}
+	d, err := time.Parse(service.DateLayout, *s)
+	if err != nil {
+		WriteValidationError(w, map[string]string{"due_date": "La fecha debe tener el formato AAAA-MM-DD"})
+		return nil, false
+	}
+	return &d, true
 }
 
 func writeTaskError(w http.ResponseWriter, r *http.Request, op string, err error) {

@@ -16,6 +16,7 @@ type Deps struct {
 	Workspaces   *service.WorkspaceService
 	Boards       *service.BoardService
 	Tasks        *service.TaskService
+	Labels       *service.LabelService
 	Activity     *service.ActivityService
 }
 
@@ -57,6 +58,12 @@ func NewRouter(d Deps) http.Handler {
 
 	ach := &activityHandler{activity: d.Activity}
 	mux.Handle("GET /boards/{id}/activity", guarded(bh.boardWorkspace, auth.ActionRead, ach.list))
+
+	lh := &labelHandler{labels: d.Labels}
+	mux.Handle("GET /boards/{id}/labels", guarded(bh.boardWorkspace, auth.ActionRead, lh.list))
+	mux.Handle("POST /boards/{id}/labels", guarded(bh.boardWorkspace, auth.ActionManageLabels, lh.create))
+	mux.Handle("PATCH /labels/{id}", guarded(lh.labelWorkspace, auth.ActionManageLabels, lh.update))
+	mux.Handle("DELETE /labels/{id}", guarded(lh.labelWorkspace, auth.ActionManageLabels, lh.delete))
 
 	th := &taskHandler{tasks: d.Tasks}
 	mux.Handle("POST /columns/{id}/tasks", guarded(bh.columnWorkspace, auth.ActionEditTasks, th.create))

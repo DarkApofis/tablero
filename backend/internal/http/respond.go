@@ -24,6 +24,7 @@ const (
 	CodeLastAdmin        = "last_admin"
 	CodeVersionConflict  = "version_conflict"
 	CodeNeighborsChanged = "neighbors_changed"
+	CodeLabelExists      = "label_exists"
 )
 
 const maxBodyBytes = 1 << 20

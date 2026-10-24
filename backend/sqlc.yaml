@@ -24,3 +24,9 @@ sql:
             go_type:
               type: time.Time
               pointer: true
+          # A date scans as midnight UTC.
+          - db_type: date
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true

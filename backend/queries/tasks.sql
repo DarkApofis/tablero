@@ -1,11 +1,18 @@
 -- name: CreateTask :one
-INSERT INTO tasks (column_id, title, description, position, created_by)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO tasks (column_id, title, description, position, created_by, priority, due_date, assignee_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetTask :one
 SELECT * FROM tasks
 WHERE id = $1;
+
+-- GetTaskDetail is GetTask plus the assignee's name, for API responses.
+-- name: GetTaskDetail :one
+SELECT sqlc.embed(t), u.name AS assignee_name
+FROM tasks t
+LEFT JOIN users u ON u.id = t.assignee_id
+WHERE t.id = $1;
 
 -- name: GetTaskForUpdate :one
 SELECT * FROM tasks
@@ -24,24 +31,33 @@ SELECT * FROM tasks
 WHERE column_id = $1
 ORDER BY position, id;
 
+-- ListTasksByBoard joins the assignee so the board loads in one query, not
+-- one per task.
 -- name: ListTasksByBoard :many
-SELECT t.*
+SELECT sqlc.embed(t), u.name AS assignee_name
 FROM tasks t
 JOIN columns c ON c.id = t.column_id
-WHERE c.board_id = $1
+LEFT JOIN users u ON u.id = t.assignee_id
+WHERE c.board_id = @board_id
+  AND (@include_archived::boolean OR t.archived_at IS NULL)
 ORDER BY t.position, t.id;
 
--- UpdateTaskContent applies the change only if the caller saw the latest
--- version. Zero rows (pgx.ErrNoRows) means someone else changed it first: 409.
--- name: UpdateTaskContent :one
+-- UpdateTask writes every editable field (the service merges the partial
+-- edit first) and applies only if the caller saw the latest version. Zero
+-- rows (pgx.ErrNoRows) means someone else changed it first: 409.
+-- name: UpdateTask :one
 UPDATE tasks
 SET title       = $3,
     description = $4,
+    priority    = $5,
+    due_date    = $6,
+    assignee_id = $7,
+    archived_at = $8,
     version     = version + 1
 WHERE id = $1 AND version = $2
 RETURNING *;
 
--- MoveTask is UpdateTaskContent for column and position: same version guard.
+-- MoveTask is UpdateTask for column and position: same version guard.
 -- name: MoveTask :one
 UPDATE tasks
 SET column_id = $3,

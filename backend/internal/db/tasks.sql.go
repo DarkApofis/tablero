@@ -7,14 +7,16 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (column_id, title, description, position, created_by)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at
+INSERT INTO tasks (column_id, title, description, position, created_by, priority, due_date, assignee_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at, priority, due_date, assignee_id, archived_at
 `
 
 type CreateTaskParams struct {
@@ -23,6 +25,9 @@ type CreateTaskParams struct {
 	Description string
 	Position    float64
 	CreatedBy   uuid.NullUUID
+	Priority    TaskPriority
+	DueDate     *time.Time
+	AssigneeID  uuid.NullUUID
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -32,6 +37,9 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.Description,
 		arg.Position,
 		arg.CreatedBy,
+		arg.Priority,
+		arg.DueDate,
+		arg.AssigneeID,
 	)
 	var i Task
 	err := row.Scan(
@@ -44,6 +52,10 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Priority,
+		&i.DueDate,
+		&i.AssigneeID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -62,7 +74,7 @@ func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at FROM tasks
+SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at, priority, due_date, assignee_id, archived_at FROM tasks
 WHERE id = $1
 `
 
@@ -79,12 +91,51 @@ func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Priority,
+		&i.DueDate,
+		&i.AssigneeID,
+		&i.ArchivedAt,
+	)
+	return i, err
+}
+
+const getTaskDetail = `-- name: GetTaskDetail :one
+SELECT t.id, t.column_id, t.title, t.description, t.position, t.version, t.created_by, t.created_at, t.updated_at, t.priority, t.due_date, t.assignee_id, t.archived_at, u.name AS assignee_name
+FROM tasks t
+LEFT JOIN users u ON u.id = t.assignee_id
+WHERE t.id = $1
+`
+
+type GetTaskDetailRow struct {
+	Task         Task
+	AssigneeName pgtype.Text
+}
+
+// GetTaskDetail is GetTask plus the assignee's name, for API responses.
+func (q *Queries) GetTaskDetail(ctx context.Context, id uuid.UUID) (GetTaskDetailRow, error) {
+	row := q.db.QueryRow(ctx, getTaskDetail, id)
+	var i GetTaskDetailRow
+	err := row.Scan(
+		&i.Task.ID,
+		&i.Task.ColumnID,
+		&i.Task.Title,
+		&i.Task.Description,
+		&i.Task.Position,
+		&i.Task.Version,
+		&i.Task.CreatedBy,
+		&i.Task.CreatedAt,
+		&i.Task.UpdatedAt,
+		&i.Task.Priority,
+		&i.Task.DueDate,
+		&i.Task.AssigneeID,
+		&i.Task.ArchivedAt,
+		&i.AssigneeName,
 	)
 	return i, err
 }
 
 const getTaskForUpdate = `-- name: GetTaskForUpdate :one
-SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at FROM tasks
+SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at, priority, due_date, assignee_id, archived_at FROM tasks
 WHERE id = $1
 FOR UPDATE
 `
@@ -102,6 +153,10 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Priority,
+		&i.DueDate,
+		&i.AssigneeID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -144,32 +199,51 @@ func (q *Queries) LastTaskPosition(ctx context.Context, arg LastTaskPositionPara
 }
 
 const listTasksByBoard = `-- name: ListTasksByBoard :many
-SELECT t.id, t.column_id, t.title, t.description, t.position, t.version, t.created_by, t.created_at, t.updated_at
+SELECT t.id, t.column_id, t.title, t.description, t.position, t.version, t.created_by, t.created_at, t.updated_at, t.priority, t.due_date, t.assignee_id, t.archived_at, u.name AS assignee_name
 FROM tasks t
 JOIN columns c ON c.id = t.column_id
+LEFT JOIN users u ON u.id = t.assignee_id
 WHERE c.board_id = $1
+  AND ($2::boolean OR t.archived_at IS NULL)
 ORDER BY t.position, t.id
 `
 
-func (q *Queries) ListTasksByBoard(ctx context.Context, boardID uuid.UUID) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasksByBoard, boardID)
+type ListTasksByBoardParams struct {
+	BoardID         uuid.UUID
+	IncludeArchived bool
+}
+
+type ListTasksByBoardRow struct {
+	Task         Task
+	AssigneeName pgtype.Text
+}
+
+// ListTasksByBoard joins the assignee so the board loads in one query, not
+// one per task.
+func (q *Queries) ListTasksByBoard(ctx context.Context, arg ListTasksByBoardParams) ([]ListTasksByBoardRow, error) {
+	rows, err := q.db.Query(ctx, listTasksByBoard, arg.BoardID, arg.IncludeArchived)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Task
+	var items []ListTasksByBoardRow
 	for rows.Next() {
-		var i Task
+		var i ListTasksByBoardRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.ColumnID,
-			&i.Title,
-			&i.Description,
-			&i.Position,
-			&i.Version,
-			&i.CreatedBy,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.Task.ID,
+			&i.Task.ColumnID,
+			&i.Task.Title,
+			&i.Task.Description,
+			&i.Task.Position,
+			&i.Task.Version,
+			&i.Task.CreatedBy,
+			&i.Task.CreatedAt,
+			&i.Task.UpdatedAt,
+			&i.Task.Priority,
+			&i.Task.DueDate,
+			&i.Task.AssigneeID,
+			&i.Task.ArchivedAt,
+			&i.AssigneeName,
 		); err != nil {
 			return nil, err
 		}
@@ -182,7 +256,7 @@ func (q *Queries) ListTasksByBoard(ctx context.Context, boardID uuid.UUID) ([]Ta
 }
 
 const listTasksByColumn = `-- name: ListTasksByColumn :many
-SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at FROM tasks
+SELECT id, column_id, title, description, position, version, created_by, created_at, updated_at, priority, due_date, assignee_id, archived_at FROM tasks
 WHERE column_id = $1
 ORDER BY position, id
 `
@@ -206,6 +280,10 @@ func (q *Queries) ListTasksByColumn(ctx context.Context, columnID uuid.UUID) ([]
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Priority,
+			&i.DueDate,
+			&i.AssigneeID,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -223,7 +301,7 @@ SET column_id = $3,
     position  = $4,
     version   = version + 1
 WHERE id = $1 AND version = $2
-RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at
+RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at, priority, due_date, assignee_id, archived_at
 `
 
 type MoveTaskParams struct {
@@ -233,7 +311,7 @@ type MoveTaskParams struct {
 	Position float64
 }
 
-// MoveTask is UpdateTaskContent for column and position: same version guard.
+// MoveTask is UpdateTask for column and position: same version guard.
 func (q *Queries) MoveTask(ctx context.Context, arg MoveTaskParams) (Task, error) {
 	row := q.db.QueryRow(ctx, moveTask,
 		arg.ID,
@@ -252,6 +330,10 @@ func (q *Queries) MoveTask(ctx context.Context, arg MoveTaskParams) (Task, error
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Priority,
+		&i.DueDate,
+		&i.AssigneeID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -331,30 +413,43 @@ func (q *Queries) TaskPositionBefore(ctx context.Context, arg TaskPositionBefore
 	return position, err
 }
 
-const updateTaskContent = `-- name: UpdateTaskContent :one
+const updateTask = `-- name: UpdateTask :one
 UPDATE tasks
 SET title       = $3,
     description = $4,
+    priority    = $5,
+    due_date    = $6,
+    assignee_id = $7,
+    archived_at = $8,
     version     = version + 1
 WHERE id = $1 AND version = $2
-RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at
+RETURNING id, column_id, title, description, position, version, created_by, created_at, updated_at, priority, due_date, assignee_id, archived_at
 `
 
-type UpdateTaskContentParams struct {
+type UpdateTaskParams struct {
 	ID          uuid.UUID
 	Version     int32
 	Title       string
 	Description string
+	Priority    TaskPriority
+	DueDate     *time.Time
+	AssigneeID  uuid.NullUUID
+	ArchivedAt  *time.Time
 }
 
-// UpdateTaskContent applies the change only if the caller saw the latest
-// version. Zero rows (pgx.ErrNoRows) means someone else changed it first: 409.
-func (q *Queries) UpdateTaskContent(ctx context.Context, arg UpdateTaskContentParams) (Task, error) {
-	row := q.db.QueryRow(ctx, updateTaskContent,
+// UpdateTask writes every editable field (the service merges the partial
+// edit first) and applies only if the caller saw the latest version. Zero
+// rows (pgx.ErrNoRows) means someone else changed it first: 409.
+func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTask,
 		arg.ID,
 		arg.Version,
 		arg.Title,
 		arg.Description,
+		arg.Priority,
+		arg.DueDate,
+		arg.AssigneeID,
+		arg.ArchivedAt,
 	)
 	var i Task
 	err := row.Scan(
@@ -367,6 +462,10 @@ func (q *Queries) UpdateTaskContent(ctx context.Context, arg UpdateTaskContentPa
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Priority,
+		&i.DueDate,
+		&i.AssigneeID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }

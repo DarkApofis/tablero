@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,23 +39,40 @@ func newColumnResponse(c db.Column) columnResponse {
 }
 
 type taskResponse struct {
-	ID          uuid.UUID     `json:"id"`
-	ColumnID    uuid.UUID     `json:"column_id"`
-	Title       string        `json:"title"`
-	Description string        `json:"description"`
-	Position    float64       `json:"position"`
-	Version     int32         `json:"version"`
-	CreatedBy   uuid.NullUUID `json:"created_by"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	ID          uuid.UUID       `json:"id"`
+	ColumnID    uuid.UUID       `json:"column_id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Position    float64         `json:"position"`
+	Version     int32           `json:"version"`
+	Priority    db.TaskPriority `json:"priority"`
+	DueDate     *string         `json:"due_date"` // YYYY-MM-DD
+	Assignee    *userRef        `json:"assignee"`
+	Labels      []labelResponse `json:"labels"`
+	ArchivedAt  *time.Time      `json:"archived_at"`
+	CreatedBy   uuid.NullUUID   `json:"created_by"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
-func newTaskResponse(t db.Task) taskResponse {
-	return taskResponse{
+func newTaskResponse(t service.TaskDetail) taskResponse {
+	resp := taskResponse{
 		ID: t.ID, ColumnID: t.ColumnID, Title: t.Title, Description: t.Description,
-		Position: t.Position, Version: t.Version, CreatedBy: t.CreatedBy,
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		Position: t.Position, Version: t.Version, Priority: t.Priority,
+		Labels: make([]labelResponse, 0, len(t.Labels)), ArchivedAt: t.ArchivedAt,
+		CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
+	if t.DueDate != nil {
+		d := t.DueDate.Format(service.DateLayout)
+		resp.DueDate = &d
+	}
+	if t.AssigneeID.Valid {
+		resp.Assignee = &userRef{ID: t.AssigneeID.UUID, Name: t.AssigneeName}
+	}
+	for _, l := range t.Labels {
+		resp.Labels = append(resp.Labels, newLabelResponse(l))
+	}
+	return resp
 }
 
 type boardDetailResponse struct {
@@ -62,6 +80,7 @@ type boardDetailResponse struct {
 	// Role is the caller's role in the board's workspace, so the client knows
 	// which actions to offer.
 	Role    db.WorkspaceRole          `json:"role"`
+	Labels  []labelResponse           `json:"labels"`
 	Columns []columnWithTasksResponse `json:"columns"`
 }
 
@@ -129,8 +148,20 @@ func (h *boardHandler) createBoard(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, newBoardResponse(board))
 }
 
+// getBoard: GET /boards/{id}[?include_archived=true]. Archived tasks are left
+// out by default.
 func (h *boardHandler) getBoard(w http.ResponseWriter, r *http.Request) {
-	detail, err := h.boards.GetBoardDetail(r.Context(), pathID(r))
+	includeArchived := false
+	if v := r.URL.Query().Get("include_archived"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			WriteValidationError(w, map[string]string{"include_archived": "include_archived debe ser true o false"})
+			return
+		}
+		includeArchived = b
+	}
+
+	detail, err := h.boards.GetBoardDetail(r.Context(), pathID(r), includeArchived)
 	if err != nil {
 		writeBoardError(w, r, "get board", err)
 		return
@@ -140,7 +171,11 @@ func (h *boardHandler) getBoard(w http.ResponseWriter, r *http.Request) {
 	resp := boardDetailResponse{
 		boardResponse: newBoardResponse(detail.Board),
 		Role:          role,
+		Labels:        make([]labelResponse, 0, len(detail.Labels)),
 		Columns:       make([]columnWithTasksResponse, 0, len(detail.Columns)),
+	}
+	for _, l := range detail.Labels {
+		resp.Labels = append(resp.Labels, newLabelResponse(l))
 	}
 	for _, c := range detail.Columns {
 		col := columnWithTasksResponse{columnResponse: newColumnResponse(c.Column), Tasks: make([]taskResponse, 0, len(c.Tasks))}
@@ -209,22 +244,20 @@ func (h *boardHandler) deleteColumn(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// optionalUUID distinguishes a missing key from an explicit null.
-type optionalUUID struct {
-	Set   bool
-	Value *uuid.UUID
-}
+// optional distinguishes a missing key (Set false) from an explicit null
+// (Set with a nil Value).
+type optional[T any] service.Optional[T]
 
-func (o *optionalUUID) UnmarshalJSON(b []byte) error {
+func (o *optional[T]) UnmarshalJSON(b []byte) error {
 	o.Set = true
 	if bytes.Equal(b, []byte("null")) {
 		return nil
 	}
-	var id uuid.UUID
-	if err := json.Unmarshal(b, &id); err != nil {
+	var v T
+	if err := json.Unmarshal(b, &v); err != nil {
 		return err
 	}
-	o.Value = &id
+	o.Value = &v
 	return nil
 }
 
@@ -233,7 +266,7 @@ func (o *optionalUUID) UnmarshalJSON(b []byte) error {
 // body cannot silently move a column to the start.
 func (h *boardHandler) moveColumn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AfterID optionalUUID `json:"after_id"`
+		AfterID optional[uuid.UUID] `json:"after_id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return

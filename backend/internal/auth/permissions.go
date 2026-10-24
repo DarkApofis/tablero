@@ -22,6 +22,8 @@ const (
 	ActionManageSettings
 	// ActionManageBoards: create, rename, delete and reorder boards and columns.
 	ActionManageBoards
+	// ActionManageLabels: create, edit and delete a board's labels.
+	ActionManageLabels
 )
 
 func (a Action) String() string {
@@ -36,6 +38,8 @@ func (a Action) String() string {
 		return "manage_settings"
 	case ActionManageBoards:
 		return "manage_boards"
+	case ActionManageLabels:
+		return "manage_labels"
 	}
 	return "unknown"
 }
@@ -49,10 +53,13 @@ var permissions = map[db.WorkspaceRole]map[Action]bool{
 		ActionManageSettings: true,
 		// Board structure is admin-only: the matrix gives members tasks only.
 		ActionManageBoards: true,
+		ActionManageLabels: true,
 	},
 	db.WorkspaceRoleMember: {
 		ActionRead:      true,
 		ActionEditTasks: true,
+		// Labels are part of working with tasks, not of the board's structure.
+		ActionManageLabels: true,
 	},
 	db.WorkspaceRoleViewer: {
 		ActionRead: true,

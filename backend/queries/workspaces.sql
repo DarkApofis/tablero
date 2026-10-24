@@ -33,11 +33,14 @@ JOIN users u ON u.id = m.user_id
 WHERE m.workspace_id = $1 AND m.user_id = $2;
 
 -- LockWorkspace serializes membership changes of one workspace so the
--- "at least one admin" check cannot race.
+-- "at least one admin" check cannot race. NO KEY UPDATE, not UPDATE: it must
+-- not block the KEY SHARE that foreign-key checks take on the workspace (an
+-- activity_log insert, say), or a task edit holding a membership row lock
+-- (LockMembership) and a member removal waiting for it would deadlock.
 -- name: LockWorkspace :exec
 SELECT id FROM workspaces
 WHERE id = $1
-FOR UPDATE;
+FOR NO KEY UPDATE;
 
 -- name: CountWorkspaceAdmins :one
 SELECT count(*) FROM workspace_members
@@ -51,3 +54,38 @@ WHERE workspace_id = $1 AND user_id = $2;
 -- name: DeleteWorkspaceMember :execrows
 DELETE FROM workspace_members
 WHERE workspace_id = $1 AND user_id = $2;
+
+-- LockMembership blocks the membership row from being deleted until the
+-- transaction ends (FOR KEY SHARE still lets the role change). Assigning a
+-- task takes it so the assignee cannot be removed halfway through.
+-- name: LockMembership :one
+SELECT user_id FROM workspace_members
+WHERE workspace_id = $1 AND user_id = $2
+FOR KEY SHARE;
+
+-- UnassignMemberTasks runs when a member is removed: it unassigns their tasks
+-- in the workspace, bumping each version as any edit does, and logs one
+-- task_updated entry per task with the same payload shape the service writes
+-- (service.TaskUpdatedPayload).
+-- name: UnassignMemberTasks :execrows
+WITH unassigned AS (
+    UPDATE tasks t
+    SET assignee_id = NULL,
+        version     = t.version + 1
+    FROM columns c
+    JOIN boards b ON b.id = c.board_id
+    WHERE t.column_id = c.id
+      AND b.workspace_id = @workspace_id::uuid
+      AND t.assignee_id = @user_id::uuid
+    RETURNING t.id, t.title, t.version, c.board_id
+)
+INSERT INTO activity_log (workspace_id, board_id, actor_id, type, payload)
+SELECT @workspace_id::uuid, u.board_id, @actor_id::uuid, 'task_updated',
+       jsonb_build_object(
+           'task_id', u.id,
+           'title', u.title,
+           'version', u.version,
+           'changes', jsonb_build_object(
+               'assignee_id', jsonb_build_object('from', @user_id::uuid, 'to', NULL))
+       )
+FROM unassigned u;

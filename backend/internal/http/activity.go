@@ -13,7 +13,8 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
-type activityActor struct {
+// userRef is how responses point at a user: activity actors, task assignees.
+type userRef struct {
 	ID   uuid.UUID `json:"id"`
 	Name string    `json:"name"`
 }
@@ -21,7 +22,7 @@ type activityActor struct {
 type activityItem struct {
 	ID        int64           `json:"id"`
 	Type      string          `json:"type"`
-	Actor     *activityActor  `json:"actor"` // null if the user was deleted
+	Actor     *userRef        `json:"actor"` // null if the user was deleted
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt time.Time       `json:"created_at"`
 }
@@ -61,7 +62,7 @@ func (h *activityHandler) list(w http.ResponseWriter, r *http.Request) {
 	for _, row := range page.Items {
 		item := activityItem{ID: row.ID, Type: row.Type, Payload: row.Payload, CreatedAt: row.CreatedAt}
 		if row.ActorID.Valid {
-			item.Actor = &activityActor{ID: row.ActorID.UUID, Name: row.ActorName.String}
+			item.Actor = &userRef{ID: row.ActorID.UUID, Name: row.ActorName.String}
 		}
 		resp.Items = append(resp.Items, item)
 	}

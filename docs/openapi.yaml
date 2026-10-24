@@ -21,8 +21,9 @@ info:
 
     | Acción | admin | member | viewer |
     |---|---|---|---|
-    | Leer workspace, miembros, boards, tareas y actividad | ✓ | ✓ | ✓ |
+    | Leer workspace, miembros, boards, etiquetas, tareas y actividad | ✓ | ✓ | ✓ |
     | Crear, editar, mover y borrar tareas | ✓ | ✓ | |
+    | Crear, editar y borrar etiquetas | ✓ | ✓ | |
     | Gestionar boards y columnas | ✓ | | |
     | Gestionar miembros | ✓ | | |
 
@@ -35,9 +36,10 @@ info:
     Por eso un recurso inexistente responde 403 y no 404. Los 404 documentados solo
     ocurren si el recurso se borra entre la autorización y la operación.
 
-    **Concurrencia optimista.** Editar o mover una tarea exige la `version` que el
-    cliente leyó. Si otro cambio ganó antes, la respuesta es `409` con el estado
-    actual completo de la tarea en `current` (ver `TaskConflict`).
+    **Concurrencia optimista.** Editar o mover una tarea (incluidos prioridad, fecha,
+    responsable, etiquetas y archivado) exige la `version` que el cliente leyó. Si
+    otro cambio ganó antes, la respuesta es `409` con el estado actual completo de
+    la tarea en `current` (ver `TaskConflict`).
 
     Todas las respuestas incluyen `X-Request-ID` (se respeta el de la petición si
     viene uno).
@@ -58,6 +60,8 @@ tags:
     description: Columnas de un tablero y su orden.
   - name: tasks
     description: Tareas, con concurrencia optimista por `version`.
+  - name: labels
+    description: Etiquetas de un tablero, que se asignan a sus tareas.
   - name: activity
     description: Registro de cambios de un tablero.
 
@@ -270,7 +274,9 @@ paths:
       tags: [workspaces]
       summary: Quitar un miembro
       operationId: removeMember
-      description: "Permiso: admin. No se puede quitar al último admin."
+      description: |
+        Permiso: admin. No se puede quitar al último admin. Sus tareas en el workspace
+        quedan sin responsable (cada una sube su `version` y registra `task_updated`).
       responses:
         "204": { description: Miembro quitado. }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -327,11 +333,17 @@ paths:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:
       tags: [boards]
-      summary: Board con sus columnas y tareas
+      summary: Board con sus etiquetas, columnas y tareas
       operationId: getBoard
       description: |
         Permiso: leer. Columnas y tareas vienen ordenadas por `position` y se leen
-        de un mismo snapshot. Una columna sin tareas trae `tasks: []`.
+        de un mismo snapshot. Una columna sin tareas trae `tasks: []`. Cada tarea trae
+        su responsable y sus etiquetas; el número de consultas no depende del número
+        de tareas. Las tareas archivadas se omiten salvo con `include_archived=true`.
+      parameters:
+        - name: include_archived
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: El board completo.
@@ -341,6 +353,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
     patch:
       tags: [boards]
@@ -403,6 +416,101 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/labels:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [labels]
+      summary: Etiquetas del board
+      operationId: listLabels
+      description: "Permiso: leer."
+      responses:
+        "200":
+          description: Etiquetas por nombre.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [labels]
+                properties:
+                  labels:
+                    type: array
+                    items: { $ref: "#/components/schemas/Label" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [labels]
+      summary: Crear una etiqueta
+      operationId: createLabel
+      description: "Permiso: member o admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, color]
+              properties:
+                name: { $ref: "#/components/schemas/LabelName" }
+                color: { $ref: "#/components/schemas/LabelColor" }
+      responses:
+        "201":
+          description: Etiqueta creada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Label" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/LabelExists" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /labels/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    patch:
+      tags: [labels]
+      summary: Renombrar o recolorear una etiqueta
+      operationId: updateLabel
+      description: "Permiso: member o admin. Los campos omitidos conservan su valor."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { $ref: "#/components/schemas/LabelName" }
+                color: { $ref: "#/components/schemas/LabelColor" }
+      responses:
+        "200":
+          description: Etiqueta actualizada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Label" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/LabelExists" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [labels]
+      summary: Borrar una etiqueta (se quita de todas sus tareas)
+      operationId: deleteLabel
+      description: |
+        Permiso: member o admin. Quitarla de las tareas no cambia su `version`: la
+        etiqueta deja de existir, no se edita ninguna tarea.
+      responses:
+        "204": { description: Etiqueta borrada. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /boards/{id}/columns:
@@ -521,6 +629,16 @@ paths:
               properties:
                 title: { type: string, minLength: 1, maxLength: 200 }
                 description: { type: string, maxLength: 10000, default: "" }
+                priority: { $ref: "#/components/schemas/Priority" }
+                due_date: { type: [string, "null"], format: date, description: AAAA-MM-DD. }
+                assignee_id:
+                  type: [string, "null"]
+                  format: uuid
+                  description: Debe ser miembro del workspace.
+                label_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  description: Etiquetas del mismo board; los duplicados se ignoran.
       responses:
         "201":
           description: "Tarea creada con `version: 1`."
@@ -531,7 +649,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422": { $ref: "#/components/responses/TaskValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /tasks/{id}:
@@ -553,12 +671,14 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
     patch:
       tags: [tasks]
-      summary: Editar título y/o descripción (concurrencia optimista)
+      summary: Editar una tarea (concurrencia optimista)
       operationId: updateTask
       description: |
         Permiso: member o admin. Aplica `UPDATE ... WHERE id = $1 AND version = $2`:
         solo tiene efecto si `version` es la actual, y la incrementa. Los campos
-        omitidos conservan su valor. Queda registrada como `task_updated`.
+        omitidos conservan su valor; `null` vacía `due_date` y `assignee_id`.
+        Queda registrada como `task_updated` con el valor anterior y el nuevo de
+        cada campo que cambió.
       requestBody:
         required: true
         content:
@@ -570,6 +690,19 @@ paths:
               properties:
                 title: { type: string, minLength: 1, maxLength: 200 }
                 description: { type: string, maxLength: 10000 }
+                priority: { $ref: "#/components/schemas/Priority" }
+                due_date: { type: [string, "null"], format: date, description: "AAAA-MM-DD; `null` la quita." }
+                assignee_id:
+                  type: [string, "null"]
+                  format: uuid
+                  description: Debe ser miembro del workspace; `null` deja la tarea sin responsable.
+                label_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  description: Reemplaza el conjunto completo; `[]` quita todas.
+                archived:
+                  type: boolean
+                  description: "`true` fija `archived_at` (si no lo estaba ya); `false` lo vacía."
                 version: { type: integer, format: int32, minimum: 1, description: La versión que el cliente leyó. }
       responses:
         "200":
@@ -582,7 +715,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/TaskConflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422": { $ref: "#/components/responses/TaskValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
     delete:
       tags: [tasks]
@@ -719,6 +852,25 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    LabelExists:
+      description: El board ya tiene una etiqueta con ese nombre (`label_exists`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TaskValidationError:
+      description: |
+        Datos inválidos (`validation_error`). Además de título, descripción o prioridad
+        inválidos: `due_date` con otro formato, `assignee_id` que no es miembro del
+        workspace, o `label_ids` con etiquetas inexistentes o de otro board.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: validation_error
+              message: Revisa los datos enviados
+              fields:
+                assignee_id: El responsable debe ser miembro del workspace
     TaskConflict:
       description: |
         La tarea cambió desde que el cliente la leyó (`version_conflict`). `current` es
@@ -738,6 +890,18 @@ components:
               description: ""
               position: 1024
               version: 2
+              priority: high
+              due_date: "2026-11-15"
+              assignee:
+                id: f38cd4ae-1c3e-4541-9e60-c47205c33d13
+                name: Ana
+              labels:
+                - id: 9b1e3c52-6f0e-4d7a-a1c2-3e5f7a9b0c1d
+                  board_id: 2f6c8a10-3b4d-4e5f-8a9b-0c1d2e3f4a5b
+                  name: Frontend
+                  color: "#3ee6b0"
+                  created_at: "2026-10-23T19:00:00-05:00"
+              archived_at: null
               created_by: f38cd4ae-1c3e-4541-9e60-c47205c33d13
               created_at: "2026-10-23T19:30:04.744832-05:00"
               updated_at: "2026-10-23T19:30:04.758611-05:00"
@@ -777,6 +941,7 @@ components:
         - not_found
         - member_not_found
         - last_admin
+        - label_exists
         - version_conflict
         - neighbors_changed
         - method_not_allowed
@@ -851,11 +1016,15 @@ components:
       allOf:
         - $ref: "#/components/schemas/Board"
         - type: object
-          required: [role, columns]
+          required: [role, labels, columns]
           properties:
             role:
               $ref: "#/components/schemas/Role"
               description: Rol del usuario en el workspace del board.
+            labels:
+              type: array
+              description: Todas las etiquetas del board, por nombre.
+              items: { $ref: "#/components/schemas/Label" }
             columns:
               type: array
               items:
@@ -878,9 +1047,32 @@ components:
         position: { type: number, format: double }
         created_at: { type: string, format: date-time }
 
+    Priority:
+      type: string
+      enum: [low, medium, high, urgent]
+      default: medium
+
+    LabelName: { type: string, minLength: 1, maxLength: 50, description: "Se recortan los espacios; único por board." }
+
+    LabelColor:
+      type: string
+      pattern: "^#[0-9a-fA-F]{6}$"
+      description: Hexadecimal de 6 dígitos; se guarda en minúsculas.
+      examples: ["#3ee6b0"]
+
+    Label:
+      type: object
+      required: [id, board_id, name, color, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        board_id: { type: string, format: uuid }
+        name: { type: string }
+        color: { type: string, description: "Hexadecimal en minúsculas, como `#3ee6b0`." }
+        created_at: { type: string, format: date-time }
+
     Task:
       type: object
-      required: [id, column_id, title, description, position, version, created_by, created_at, updated_at]
+      required: [id, column_id, title, description, position, version, priority, due_date, assignee, labels, archived_at, created_by, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         column_id: { type: string, format: uuid }
@@ -888,6 +1080,25 @@ components:
         description: { type: string }
         position: { type: number, format: double }
         version: { type: integer, format: int32, description: Se incrementa con cada edición o movimiento. }
+        priority: { $ref: "#/components/schemas/Priority" }
+        due_date: { type: [string, "null"], format: date }
+        assignee:
+          description: "`null` si no tiene responsable."
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, name]
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+        labels:
+          type: array
+          description: Por nombre.
+          items: { $ref: "#/components/schemas/Label" }
+        archived_at:
+          type: [string, "null"]
+          format: date-time
+          description: "`null` si no está archivada."
         created_by:
           type: [string, "null"]
           format: uuid
@@ -933,12 +1144,18 @@ components:
 
     TaskCreatedPayload:
       type: object
-      required: [task_id, title, column_id, position]
+      required: [task_id, title, column_id, position, priority, due_date, assignee_id, label_ids]
       properties:
         task_id: { type: string, format: uuid }
         title: { type: string }
         column_id: { type: string, format: uuid }
         position: { type: number }
+        priority: { $ref: "#/components/schemas/Priority" }
+        due_date: { type: [string, "null"], format: date }
+        assignee_id: { type: [string, "null"], format: uuid }
+        label_ids:
+          type: array
+          items: { type: string, format: uuid }
 
     TaskUpdatedPayload:
       type: object
@@ -949,10 +1166,24 @@ components:
         version: { type: integer }
         changes:
           type: object
-          description: Solo los campos que cambiaron.
+          description: |
+            Solo los campos que cambiaron, con su valor anterior (`from`) y el nuevo
+            (`to`), codificados como en la API. Quitar a un miembro del workspace
+            registra un `assignee_id` que pasa a `null`.
           properties:
-            title: { $ref: "#/components/schemas/FieldChange" }
-            description: { $ref: "#/components/schemas/FieldChange" }
+            title: { $ref: "#/components/schemas/StringChange" }
+            description: { $ref: "#/components/schemas/StringChange" }
+            priority: { $ref: "#/components/schemas/StringChange" }
+            due_date: { $ref: "#/components/schemas/NullableStringChange" }
+            assignee_id: { $ref: "#/components/schemas/NullableStringChange" }
+            archived_at: { $ref: "#/components/schemas/NullableStringChange" }
+            label_ids:
+              type: object
+              required: [from, to]
+              description: Ids ordenados.
+              properties:
+                from: { type: array, items: { type: string, format: uuid } }
+                to: { type: array, items: { type: string, format: uuid } }
 
     TaskMovedPayload:
       type: object
@@ -964,12 +1195,20 @@ components:
         from: { $ref: "#/components/schemas/TaskPlacement" }
         to: { $ref: "#/components/schemas/TaskPlacement" }
 
-    FieldChange:
+    StringChange:
       type: object
       required: [from, to]
       properties:
         from: { type: string }
         to: { type: string }
+
+    NullableStringChange:
+      type: object
+      required: [from, to]
+      description: "Fechas como AAAA-MM-DD, `archived_at` como date-time, ids como uuid; `null` = vacío."
+      properties:
+        from: { type: [string, "null"] }
+        to: { type: [string, "null"] }
 
     TaskPlacement:
       type: object

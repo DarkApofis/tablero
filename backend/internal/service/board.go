@@ -35,15 +35,17 @@ func NewBoardService(pool *pgxpool.Pool) *BoardService {
 	return &BoardService{pool: pool, q: db.New(pool)}
 }
 
-// BoardDetail is a board with its columns, each with its tasks, all ordered by position.
+// BoardDetail is a board with its labels and its columns, each with its
+// tasks, columns and tasks ordered by position.
 type BoardDetail struct {
 	Board   db.Board
+	Labels  []db.Label
 	Columns []ColumnWithTasks
 }
 
 type ColumnWithTasks struct {
 	db.Column
-	Tasks []db.Task
+	Tasks []TaskDetail
 }
 
 // --- workspace resolution, used for authorization ---
@@ -81,9 +83,11 @@ func (s *BoardService) ListBoards(ctx context.Context, workspaceID uuid.UUID) ([
 	return s.q.ListBoardsByWorkspace(ctx, workspaceID)
 }
 
-// GetBoardDetail reads the board, its columns and its tasks from one snapshot
-// so the three lists are consistent with each other.
-func (s *BoardService) GetBoardDetail(ctx context.Context, boardID uuid.UUID) (BoardDetail, error) {
+// GetBoardDetail reads the board, its labels, its columns and their tasks
+// (with assignee and labels) from one snapshot so they are consistent with
+// each other. It runs a fixed number of queries however many tasks there are.
+// Archived tasks are left out unless includeArchived.
+func (s *BoardService) GetBoardDetail(ctx context.Context, boardID uuid.UUID, includeArchived bool) (BoardDetail, error) {
 	var detail BoardDetail
 	err := db.InTx(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(q *db.Queries) error {
 		board, err := q.GetBoard(ctx, boardID)
@@ -93,21 +97,36 @@ func (s *BoardService) GetBoardDetail(ctx context.Context, boardID uuid.UUID) (B
 		if err != nil {
 			return fmt.Errorf("get board: %w", err)
 		}
+		labels, err := q.ListLabelsByBoard(ctx, boardID)
+		if err != nil {
+			return fmt.Errorf("list labels: %w", err)
+		}
 		columns, err := q.ListColumnsByBoard(ctx, boardID)
 		if err != nil {
 			return fmt.Errorf("list columns: %w", err)
 		}
-		tasks, err := q.ListTasksByBoard(ctx, boardID)
+		tasks, err := q.ListTasksByBoard(ctx, db.ListTasksByBoardParams{BoardID: boardID, IncludeArchived: includeArchived})
 		if err != nil {
 			return fmt.Errorf("list tasks: %w", err)
 		}
-
-		// Tasks arrive ordered by position; bucketing keeps that order per column.
-		byColumn := make(map[uuid.UUID][]db.Task, len(columns))
-		for _, t := range tasks {
-			byColumn[t.ColumnID] = append(byColumn[t.ColumnID], t)
+		taskLabels, err := q.ListBoardTaskLabels(ctx, boardID)
+		if err != nil {
+			return fmt.Errorf("list task labels: %w", err)
 		}
-		detail = BoardDetail{Board: board, Columns: make([]ColumnWithTasks, 0, len(columns))}
+
+		// Labels arrive ordered by name and tasks by position; bucketing keeps
+		// those orders per task and per column.
+		labelsByTask := make(map[uuid.UUID][]db.Label)
+		for _, tl := range taskLabels {
+			labelsByTask[tl.TaskID] = append(labelsByTask[tl.TaskID], tl.Label)
+		}
+		byColumn := make(map[uuid.UUID][]TaskDetail, len(columns))
+		for _, t := range tasks {
+			byColumn[t.Task.ColumnID] = append(byColumn[t.Task.ColumnID], TaskDetail{
+				Task: t.Task, AssigneeName: t.AssigneeName.String, Labels: labelsByTask[t.Task.ID],
+			})
+		}
+		detail = BoardDetail{Board: board, Labels: labels, Columns: make([]ColumnWithTasks, 0, len(columns))}
 		for _, c := range columns {
 			detail.Columns = append(detail.Columns, ColumnWithTasks{Column: c, Tasks: byColumn[c.ID]})
 		}

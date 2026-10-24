@@ -113,6 +113,11 @@ func (f *fakeWorkspaceStore) DeleteWorkspaceMember(_ context.Context, p db.Delet
 	return 1, nil
 }
 
+// The fake has no tasks to unassign.
+func (f *fakeWorkspaceStore) UnassignMemberTasks(context.Context, db.UnassignMemberTasksParams) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeWorkspaceStore) find(wsID, userID uuid.UUID) int {
 	return slices.IndexFunc(f.members, func(m db.WorkspaceMember) bool {
 		return m.WorkspaceID == wsID && m.UserID == userID
