@@ -61,7 +61,7 @@ func NewPostgresWorkspaceStore(pool *pgxpool.Pool) *PostgresWorkspaceStore {
 
 func (s *PostgresWorkspaceStore) InTx(ctx context.Context, fn func(q WorkspaceQueries) error) error {
 	return pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return fn(s.Queries.WithTx(tx))
+		return fn(s.WithTx(tx))
 	})
 }
 

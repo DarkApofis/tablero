@@ -542,6 +542,12 @@ func TestMoveColumnErrors(t *testing.T) {
 	if got := e.columnNames(board); got != "A,B" {
 		t.Errorf("order changed: %s", got)
 	}
+
+	// Guards the message text itself: it was once saved double-encoded (UTF-8 read as ANSI).
+	rec := e.do("POST", path, `{"after_id":"`+a.String()+`"}`, admin)
+	if got := decodeError(t, rec).Fields["after_id"]; got != "Una columna no puede ir después de sí misma" {
+		t.Errorf("message = %q", got)
+	}
 }
 
 func TestMoveColumnRebalancesWhenGapIsExhausted(t *testing.T) {

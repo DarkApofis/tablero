@@ -1,0 +1,979 @@
+openapi: 3.1.0
+info:
+  title: Tablero API
+  version: 0.1.0
+  description: |
+    API del tablero kanban colaborativo.
+
+    **Autenticación.** Las rutas protegidas exigen `Authorization: Bearer <access_token>`,
+    un JWT HS256 de corta duración (15 min por defecto) que devuelven `/auth/register`
+    y `/auth/login`. Esas dos rutas también fijan un refresh token en la cookie
+    `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`).
+
+    **Errores.** Todas las respuestas de error tienen la forma
+    `{"error": {"code": "...", "message": "..."}}`; los errores de validación (422)
+    añaden `error.fields` con un mensaje por campo. Cualquier ruta puede responder
+    `500 internal_error`; una ruta inexistente responde `404 not_found` y un método
+    no soportado `405 method_not_allowed` (con cabecera `Allow`).
+
+    **Autorización por workspace.** Toda ruta bajo un workspace (miembros, boards,
+    columnas, tareas, actividad) se autoriza con el rol del usuario en ese workspace:
+
+    | Acción | admin | member | viewer |
+    |---|---|---|---|
+    | Leer workspace, miembros, boards, tareas y actividad | ✓ | ✓ | ✓ |
+    | Crear, editar, mover y borrar tareas | ✓ | ✓ | |
+    | Gestionar boards y columnas | ✓ | | |
+    | Gestionar miembros | ✓ | | |
+
+    Hay dos 403 distintos, ambos con `code: forbidden`:
+    - **"No tienes acceso a este workspace"**: el usuario no es miembro, *o* el recurso
+      (workspace, board, columna o tarea) no existe, *o* el id no es válido. La
+      respuesta es idéntica en los tres casos para no revelar qué existe.
+    - **"Tu rol no permite esta acción"**: es miembro pero su rol no alcanza.
+
+    Por eso un recurso inexistente responde 403 y no 404. Los 404 documentados solo
+    ocurren si el recurso se borra entre la autorización y la operación.
+
+    **Concurrencia optimista.** Editar o mover una tarea exige la `version` que el
+    cliente leyó. Si otro cambio ganó antes, la respuesta es `409` con el estado
+    actual completo de la tarea en `current` (ver `TaskConflict`).
+
+    Todas las respuestas incluyen `X-Request-ID` (se respeta el de la petición si
+    viene uno).
+servers:
+  - url: http://localhost:8080
+    description: Desarrollo local
+
+tags:
+  - name: health
+    description: Estado del servicio.
+  - name: auth
+    description: Registro, login y usuario actual.
+  - name: workspaces
+    description: Workspaces y sus miembros.
+  - name: boards
+    description: Tableros de un workspace.
+  - name: columns
+    description: Columnas de un tablero y su orden.
+  - name: tasks
+    description: Tareas, con concurrencia optimista por `version`.
+  - name: activity
+    description: Registro de cambios de un tablero.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Estado del servicio y de la base de datos
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: El servicio y la base de datos responden.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+        "503":
+          description: La base de datos no responde (`db_unavailable`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Crear una cuenta e iniciar sesión
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254, description: Se normaliza a minúsculas. }
+                name: { type: string, minLength: 1, maxLength: 100 }
+                password: { type: string, minLength: 8, maxLength: 128, description: "Longitud en caracteres, no bytes." }
+      responses:
+        "201":
+          description: Cuenta creada; sesión iniciada.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "409":
+          description: Ya existe una cuenta con ese correo (`email_taken`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Iniciar sesión
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Sesión iniciada.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401":
+          description: |
+            Credenciales inválidas (`invalid_credentials`, "Correo o contraseña incorrectos").
+            La respuesta es idéntica si el correo no existe, la contraseña es incorrecta
+            o los campos están vacíos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /me:
+    get:
+      tags: [auth]
+      summary: Usuario autenticado
+      operationId: getMe
+      responses:
+        "200":
+          description: El usuario del token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces:
+    post:
+      tags: [workspaces]
+      summary: Crear un workspace (el creador queda como admin)
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameInput" }
+      responses:
+        "201":
+          description: Workspace creado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [workspaces]
+      summary: Workspaces del usuario, con su rol y el número de miembros
+      operationId: listWorkspaces
+      responses:
+        "200":
+          description: Lista (vacía si no pertenece a ninguno).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaces]
+                properties:
+                  workspaces:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/members:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [workspaces]
+      summary: Miembros del workspace
+      operationId: listMembers
+      description: "Permiso: leer (cualquier miembro)."
+      responses:
+        "200":
+          description: Miembros por orden de incorporación.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: "#/components/schemas/Member" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/members/{userId}:
+    parameters:
+      - { $ref: "#/components/parameters/ID" }
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [workspaces]
+      summary: Cambiar el rol de un miembro
+      operationId: changeMemberRole
+      description: "Permiso: admin. No se puede degradar al último admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "200":
+          description: Miembro actualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MemberNotFound" }
+        "409": { $ref: "#/components/responses/LastAdmin" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [workspaces]
+      summary: Quitar un miembro
+      operationId: removeMember
+      description: "Permiso: admin. No se puede quitar al último admin."
+      responses:
+        "204": { description: Miembro quitado. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MemberNotFound" }
+        "409": { $ref: "#/components/responses/LastAdmin" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/boards:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [boards]
+      summary: Boards del workspace
+      operationId: listBoards
+      description: "Permiso: leer."
+      responses:
+        "200":
+          description: Boards por fecha de creación.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [boards]
+                properties:
+                  boards:
+                    type: array
+                    items: { $ref: "#/components/schemas/Board" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [boards]
+      summary: Crear un board
+      operationId: createBoard
+      description: "Permiso: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameInput" }
+      responses:
+        "201":
+          description: Board creado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Board" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [boards]
+      summary: Board con sus columnas y tareas
+      operationId: getBoard
+      description: |
+        Permiso: leer. Columnas y tareas vienen ordenadas por `position` y se leen
+        de un mismo snapshot. Una columna sin tareas trae `tasks: []`.
+      responses:
+        "200":
+          description: El board completo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BoardDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [boards]
+      summary: Renombrar un board
+      operationId: renameBoard
+      description: "Permiso: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameInput" }
+      responses:
+        "200":
+          description: Board actualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Board" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [boards]
+      summary: Borrar un board (con sus columnas, tareas y actividad)
+      operationId: deleteBoard
+      description: "Permiso: admin."
+      responses:
+        "204": { description: Board borrado. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/activity:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [activity]
+      summary: Actividad del board, de la más reciente a la más antigua
+      operationId: listBoardActivity
+      description: |
+        Permiso: leer. Paginación por cursor: pasa `next_cursor` de una página como
+        `cursor` para la siguiente. El cursor es estable aunque lleguen entradas
+        nuevas entre páginas. `next_cursor` es `null` en la última página.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          description: Valor opaco devuelto en `next_cursor`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Una página de actividad.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/columns:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [columns]
+      summary: Crear una columna al final del board
+      operationId: createColumn
+      description: "Permiso: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameInput" }
+      responses:
+        "201":
+          description: Columna creada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Column" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /columns/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    patch:
+      tags: [columns]
+      summary: Renombrar una columna
+      operationId: renameColumn
+      description: "Permiso: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameInput" }
+      responses:
+        "200":
+          description: Columna actualizada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Column" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [columns]
+      summary: Borrar una columna (con sus tareas)
+      operationId: deleteColumn
+      description: "Permiso: admin."
+      responses:
+        "204": { description: Columna borrada. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /columns/{id}/move:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [columns]
+      summary: Reordenar una columna
+      operationId: moveColumn
+      description: |
+        Permiso: admin. Coloca la columna justo después de `after_id`, o al inicio
+        si `after_id` es `null`. La clave es obligatoria. La posición se calcula como
+        punto medio entre vecinas; si se agota la precisión se reequilibra el board.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [after_id]
+              properties:
+                after_id:
+                  type: [string, "null"]
+                  format: uuid
+                  description: Columna del mismo board tras la que colocarla; `null` = al inicio.
+      responses:
+        "200":
+          description: Columna con su nueva posición.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Column" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Falta `after_id`, apunta a sí misma o a una columna de otro board.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /columns/{id}/tasks:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [tasks]
+      summary: Crear una tarea al final de la columna
+      operationId: createTask
+      description: "Permiso: member o admin. Queda registrada como `task_created` en la actividad."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+                description: { type: string, maxLength: 10000, default: "" }
+      responses:
+        "201":
+          description: "Tarea creada con `version: 1`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /tasks/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [tasks]
+      summary: Obtener una tarea
+      operationId: getTask
+      description: "Permiso: leer."
+      responses:
+        "200":
+          description: La tarea.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [tasks]
+      summary: Editar título y/o descripción (concurrencia optimista)
+      operationId: updateTask
+      description: |
+        Permiso: member o admin. Aplica `UPDATE ... WHERE id = $1 AND version = $2`:
+        solo tiene efecto si `version` es la actual, y la incrementa. Los campos
+        omitidos conservan su valor. Queda registrada como `task_updated`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              minProperties: 2
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+                description: { type: string, maxLength: 10000 }
+                version: { type: integer, format: int32, minimum: 1, description: La versión que el cliente leyó. }
+      responses:
+        "200":
+          description: Tarea actualizada (`version` + 1).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/TaskConflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [tasks]
+      summary: Borrar una tarea
+      operationId: deleteTask
+      description: "Permiso: member o admin."
+      responses:
+        "204": { description: Tarea borrada. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /tasks/{id}/move:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    patch:
+      tags: [tasks]
+      summary: Mover una tarea (columna y/o posición)
+      operationId: moveTask
+      description: |
+        Permiso: member o admin. La nueva `position` es el punto medio entre los
+        vecinos indicados:
+        - `afterTaskId` y `beforeTaskId`: entre ambos.
+        - solo uno: el otro vecino es la tarea adyacente en ese momento.
+        - ninguno: al final de `columnId`.
+
+        Si la precisión se agota, se reequilibra la columna. Usa la misma guarda de
+        `version` que la edición. Queda registrada como `task_moved`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [columnId, version]
+              properties:
+                columnId: { type: string, format: uuid, description: "Columna destino, del mismo board." }
+                afterTaskId: { type: [string, "null"], format: uuid }
+                beforeTaskId: { type: [string, "null"], format: uuid }
+                version: { type: integer, format: int32, minimum: 1 }
+      responses:
+        "200":
+          description: Tarea movida (`version` + 1).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            `version_conflict`: la tarea cambió desde que el cliente la leyó.
+            `neighbors_changed`: `afterTaskId` ya no va antes que `beforeTaskId`
+            (la vista de la columna está desactualizada). En ambos casos `current`
+            trae la tarea tal como está ahora.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskConflict" }
+        "422":
+          description: |
+            Falta `columnId` o `version`, la columna no existe o es de otro board, o un
+            vecino no está en la columna destino o es la propia tarea.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      description: Un id que no es UUID se trata como recurso inexistente (403).
+      schema: { type: string, format: uuid }
+
+  headers:
+    RefreshCookie:
+      description: "`refresh_token=<opaco>; Path=/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=...`"
+      schema: { type: string }
+
+  responses:
+    InvalidJSON:
+      description: El cuerpo no es JSON válido (`invalid_json`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Datos inválidos (`validation_error`), con un mensaje por campo en `error.fields`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: validation_error
+              message: Revisa los datos enviados
+              fields:
+                name: El nombre es obligatorio
+    Unauthorized:
+      description: Falta el token o no es válido (`unauthorized`).
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: |
+        `forbidden`. "No tienes acceso a este workspace" si no es miembro o el recurso no
+        existe (respuesta idéntica en ambos casos); "Tu rol no permite esta acción" si
+        es miembro sin el permiso necesario.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: El recurso se borró entre la autorización y la operación (`not_found`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MemberNotFound:
+      description: El usuario indicado no es miembro del workspace (`member_not_found`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LastAdmin:
+      description: El cambio dejaría el workspace sin admin (`last_admin`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TaskConflict:
+      description: |
+        La tarea cambió desde que el cliente la leyó (`version_conflict`). `current` es
+        la tarea completa tal como está ahora; el cliente puede reconciliar y reintentar
+        con `current.version`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TaskConflict" }
+          example:
+            error:
+              code: version_conflict
+              message: La tarea cambió desde que la cargaste
+            current:
+              id: 485daec0-e2cf-435b-8f71-99ce04a8c742
+              column_id: 40105d1c-a149-44f8-880a-6a66d537dc3e
+              title: Diseñar login (Ana)
+              description: ""
+              position: 1024
+              version: 2
+              created_by: f38cd4ae-1c3e-4541-9e60-c47205c33d13
+              created_at: "2026-10-23T19:30:04.744832-05:00"
+              updated_at: "2026-10-23T19:30:04.758611-05:00"
+    InternalError:
+      description: Error inesperado (`internal_error`); el detalle queda en los logs con el request id.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: "#/components/schemas/ErrorDetail" }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: "#/components/schemas/ErrorCode" }
+        message: { type: string, description: Mensaje legible para el usuario. }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+          description: Solo en `validation_error`; un mensaje por campo.
+
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_json
+        - validation_error
+        - invalid_credentials
+        - email_taken
+        - unauthorized
+        - forbidden
+        - not_found
+        - member_not_found
+        - last_admin
+        - version_conflict
+        - neighbors_changed
+        - method_not_allowed
+        - db_unavailable
+        - internal_error
+
+    TaskConflict:
+      type: object
+      required: [error, current]
+      properties:
+        error: { $ref: "#/components/schemas/ErrorDetail" }
+        current: { $ref: "#/components/schemas/Task" }
+
+    Role:
+      type: string
+      enum: [admin, member, viewer]
+
+    NameInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, description: Se recortan los espacios. }
+
+    User:
+      type: object
+      required: [id, email, name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Session:
+      type: object
+      required: [user, access_token, token_type, expires_in]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        access_token: { type: string, description: JWT HS256. }
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer, description: Segundos hasta que expira el access token. }
+
+    Workspace:
+      type: object
+      required: [id, name, created_at, role, member_count]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        role: { $ref: "#/components/schemas/Role" }
+        member_count: { type: integer }
+
+    Member:
+      type: object
+      required: [user_id, email, name, role, joined_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        joined_at: { type: string, format: date-time }
+
+    Board:
+      type: object
+      required: [id, workspace_id, name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+
+    BoardDetail:
+      allOf:
+        - $ref: "#/components/schemas/Board"
+        - type: object
+          required: [role, columns]
+          properties:
+            role:
+              $ref: "#/components/schemas/Role"
+              description: Rol del usuario en el workspace del board.
+            columns:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/Column"
+                  - type: object
+                    required: [tasks]
+                    properties:
+                      tasks:
+                        type: array
+                        items: { $ref: "#/components/schemas/Task" }
+
+    Column:
+      type: object
+      required: [id, board_id, name, position, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        board_id: { type: string, format: uuid }
+        name: { type: string }
+        position: { type: number, format: double }
+        created_at: { type: string, format: date-time }
+
+    Task:
+      type: object
+      required: [id, column_id, title, description, position, version, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        column_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        position: { type: number, format: double }
+        version: { type: integer, format: int32, description: Se incrementa con cada edición o movimiento. }
+        created_by:
+          type: [string, "null"]
+          format: uuid
+          description: "`null` si el usuario fue borrado."
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ActivityPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ActivityItem" }
+        next_cursor:
+          type: [string, "null"]
+          description: "`null` en la última página."
+
+    ActivityItem:
+      type: object
+      required: [id, type, actor, payload, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        type:
+          type: string
+          enum: [task_created, task_updated, task_moved]
+        actor:
+          description: "`null` si el usuario fue borrado."
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, name]
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+        payload:
+          description: Depende de `type`.
+          oneOf:
+            - $ref: "#/components/schemas/TaskCreatedPayload"
+            - $ref: "#/components/schemas/TaskUpdatedPayload"
+            - $ref: "#/components/schemas/TaskMovedPayload"
+        created_at: { type: string, format: date-time }
+
+    TaskCreatedPayload:
+      type: object
+      required: [task_id, title, column_id, position]
+      properties:
+        task_id: { type: string, format: uuid }
+        title: { type: string }
+        column_id: { type: string, format: uuid }
+        position: { type: number }
+
+    TaskUpdatedPayload:
+      type: object
+      required: [task_id, title, version, changes]
+      properties:
+        task_id: { type: string, format: uuid }
+        title: { type: string, description: Título tras el cambio. }
+        version: { type: integer }
+        changes:
+          type: object
+          description: Solo los campos que cambiaron.
+          properties:
+            title: { $ref: "#/components/schemas/FieldChange" }
+            description: { $ref: "#/components/schemas/FieldChange" }
+
+    TaskMovedPayload:
+      type: object
+      required: [task_id, title, version, from, to]
+      properties:
+        task_id: { type: string, format: uuid }
+        title: { type: string }
+        version: { type: integer }
+        from: { $ref: "#/components/schemas/TaskPlacement" }
+        to: { $ref: "#/components/schemas/TaskPlacement" }
+
+    FieldChange:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string }
+        to: { type: string }
+
+    TaskPlacement:
+      type: object
+      required: [column_id, position]
+      properties:
+        column_id: { type: string, format: uuid }
+        position: { type: number }

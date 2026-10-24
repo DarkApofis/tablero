@@ -65,7 +65,7 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("PATCH /tasks/{id}/move", guarded(th.taskWorkspace, auth.ActionEditTasks, th.move))
 	mux.Handle("DELETE /tasks/{id}", guarded(th.taskWorkspace, auth.ActionEditTasks, th.delete))
 
-	var h http.Handler = withJSONMuxErrors(mux)
+	h := withJSONMuxErrors(mux)
 	h = withCORS(d.CORSOrigins, h)
 	h = withRecover(h)
 	h = withLogging(h)

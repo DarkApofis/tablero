@@ -196,7 +196,7 @@ func (s *BoardService) DeleteColumn(ctx context.Context, columnID uuid.UUID) err
 // same position; if the gap is exhausted the board is rebalanced first.
 func (s *BoardService) MoveColumn(ctx context.Context, columnID uuid.UUID, afterID *uuid.UUID) (db.Column, error) {
 	if afterID != nil && *afterID == columnID {
-		return db.Column{}, &ValidationError{Fields: map[string]string{"after_id": "Una columna no puede ir despuÃ©s de sÃ­ misma"}}
+		return db.Column{}, &ValidationError{Fields: map[string]string{"after_id": "Una columna no puede ir después de sí misma"}}
 	}
 
 	var moved db.Column

@@ -83,7 +83,7 @@ func setupTestDB() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, os.DirFS(migrationsDir))
 	if err != nil {
 		return "", fmt.Errorf("goose provider: %w", err)
