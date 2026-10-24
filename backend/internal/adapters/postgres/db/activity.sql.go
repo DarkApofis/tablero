@@ -13,9 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertActivity = `-- name: InsertActivity :exec
+const insertActivity = `-- name: InsertActivity :one
 INSERT INTO activity_log (workspace_id, board_id, actor_id, type, payload)
 VALUES ($1, $2, $3, $4, $5)
+RETURNING id, workspace_id, board_id, actor_id, type, payload, created_at
 `
 
 type InsertActivityParams struct {
@@ -26,15 +27,27 @@ type InsertActivityParams struct {
 	Payload     []byte
 }
 
-func (q *Queries) InsertActivity(ctx context.Context, arg InsertActivityParams) error {
-	_, err := q.db.Exec(ctx, insertActivity,
+// InsertActivity returns the entry so the use case can publish it as an
+// event once the transaction commits.
+func (q *Queries) InsertActivity(ctx context.Context, arg InsertActivityParams) (ActivityLog, error) {
+	row := q.db.QueryRow(ctx, insertActivity,
 		arg.WorkspaceID,
 		arg.BoardID,
 		arg.ActorID,
 		arg.Type,
 		arg.Payload,
 	)
-	return err
+	var i ActivityLog
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.BoardID,
+		&i.ActorID,
+		&i.Type,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const listBoardActivity = `-- name: ListBoardActivity :many

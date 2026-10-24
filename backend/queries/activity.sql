@@ -1,6 +1,9 @@
--- name: InsertActivity :exec
+-- InsertActivity returns the entry so the use case can publish it as an
+-- event once the transaction commits.
+-- name: InsertActivity :one
 INSERT INTO activity_log (workspace_id, board_id, actor_id, type, payload)
-VALUES ($1, $2, $3, $4, $5);
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
 
 -- ListBoardActivity returns entries older than the cursor id, newest first.
 -- The first page passes the largest bigint as cursor.

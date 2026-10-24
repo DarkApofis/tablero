@@ -5,9 +5,9 @@ import (
 
 	appauth "github.com/DarkApofis/tablero/backend/internal/app/auth"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
+	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 type Deps struct {
@@ -18,7 +18,7 @@ type Deps struct {
 	Authorizer   *workspace.Authorizer
 	Workspaces   *workspace.Service
 	Boards       *board.Service
-	Tasks        *service.TaskService
+	Tasks        *task.Service
 	Labels       *board.LabelService
 	Activity     *board.ActivityService
 }

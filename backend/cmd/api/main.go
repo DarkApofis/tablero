@@ -17,9 +17,9 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/app/auth"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
+	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 // main.go is the composition root: it builds the adapters, hands them to the
@@ -64,6 +64,7 @@ func run() error {
 	workspaces := postgres.NewWorkspaces(pool)
 	boards := postgres.NewBoards(pool)
 	labels := postgres.NewLabels(pool)
+	activity := postgres.NewActivity(pool)
 	authService, err := auth.NewService(users, users, hasher.Argon2id{},
 		token.NewIssuer(cfg.JWTSecret, cfg.AccessTokenTTL), systemClock{}, cfg.RefreshTokenTTL)
 	if err != nil {
@@ -80,9 +81,9 @@ func run() error {
 			Authorizer:   workspace.NewAuthorizer(workspaces),
 			Workspaces:   workspace.NewService(workspaces, tx, publisher),
 			Boards:       board.NewService(boards, labels, tx),
-			Tasks:        service.NewTaskService(pool),
+			Tasks:        task.NewService(postgres.NewTasks(pool), boards, workspaces, activity, tx, publisher, systemClock{}),
 			Labels:       board.NewLabelService(labels),
-			Activity:     board.NewActivityService(postgres.NewActivity(pool)),
+			Activity:     board.NewActivityService(activity),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

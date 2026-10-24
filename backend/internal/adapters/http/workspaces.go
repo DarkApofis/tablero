@@ -175,11 +175,6 @@ func access(r *http.Request) domain.Access {
 	return acc
 }
 
-// workspaceID is the workspace the request was authorized against.
-func workspaceID(r *http.Request) uuid.UUID {
-	return uuid.UUID(access(r).WorkspaceID)
-}
-
 // memberIDFromPath parses {userId}. The caller is already an admin of the
 // workspace here, so a bad id can honestly be reported as an unknown member.
 func memberIDFromPath(w http.ResponseWriter, r *http.Request) (domain.ID, bool) {

@@ -7,9 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 // conflictResponse is the 409 body: the uniform error plus the task as it is
@@ -20,7 +19,7 @@ type conflictResponse struct {
 }
 
 type taskHandler struct {
-	tasks *service.TaskService
+	tasks *task.Service
 }
 
 func (h *taskHandler) taskWorkspace(r *http.Request) (domain.ID, error) {
@@ -28,8 +27,7 @@ func (h *taskHandler) taskWorkspace(r *http.Request) (domain.ID, error) {
 	if err != nil {
 		return domain.NilID, err
 	}
-	ws, err := h.tasks.WorkspaceOfTask(r.Context(), uuid.UUID(id))
-	return domain.ID(ws), err
+	return h.tasks.WorkspaceOfTask(r.Context(), id)
 }
 
 // create: POST /columns/{id}/tasks appends a task to the column.
@@ -37,7 +35,7 @@ func (h *taskHandler) create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Title       string           `json:"title"`
 		Description string           `json:"description"`
-		Priority    *db.TaskPriority `json:"priority"`
+		Priority    *domain.Priority `json:"priority"`
 		DueDate     *string          `json:"due_date"`
 		AssigneeID  *uuid.UUID       `json:"assignee_id"`
 		LabelIDs    []uuid.UUID      `json:"label_ids"`
@@ -49,27 +47,25 @@ func (h *taskHandler) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	userID := uuid.UUID(currentUser(r))
 
-	task, err := h.tasks.Create(r.Context(), service.CreateTaskInput{
-		ColumnID: uuid.UUID(pathID(r)), WorkspaceID: workspaceID(r),
-		Title: req.Title, Description: req.Description, Priority: req.Priority,
-		DueDate: dueDate, AssigneeID: req.AssigneeID, LabelIDs: req.LabelIDs, CreatedBy: userID,
+	t, err := h.tasks.Create(r.Context(), access(r), task.CreateInput{
+		ColumnID: pathID(r), Title: req.Title, Description: req.Description, Priority: req.Priority,
+		DueDate: dueDate, AssigneeID: idPtr(req.AssigneeID), LabelIDs: ids(req.LabelIDs),
 	})
 	if err != nil {
 		writeTaskError(w, r, "create task", err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, newTaskResponse(fromServiceTask(task)))
+	WriteJSON(w, http.StatusCreated, newTaskResponse(t))
 }
 
 func (h *taskHandler) get(w http.ResponseWriter, r *http.Request) {
-	task, err := h.tasks.Get(r.Context(), uuid.UUID(pathID(r)))
+	t, err := h.tasks.Get(r.Context(), access(r), pathID(r))
 	if err != nil {
 		writeTaskError(w, r, "get task", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newTaskResponse(fromServiceTask(task)))
+	WriteJSON(w, http.StatusOK, newTaskResponse(t))
 }
 
 // update: PATCH /tasks/{id} with any of the editable fields and "version".
@@ -78,7 +74,7 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Title       *string             `json:"title"`
 		Description *string             `json:"description"`
-		Priority    *db.TaskPriority    `json:"priority"`
+		Priority    *domain.Priority    `json:"priority"`
 		DueDate     optional[string]    `json:"due_date"`
 		AssigneeID  optional[uuid.UUID] `json:"assignee_id"`
 		LabelIDs    *[]uuid.UUID        `json:"label_ids"`
@@ -91,26 +87,28 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 	if !requireVersion(w, req.Version) {
 		return
 	}
-	dueDate := service.Optional[time.Time]{Set: req.DueDate.Set}
+	edit := domain.TaskEdit{
+		Title: req.Title, Description: req.Description, Priority: req.Priority, Archived: req.Archived,
+		DueDate:    domain.Optional[time.Time]{Set: req.DueDate.Set},
+		AssigneeID: domain.Optional[domain.ID]{Set: req.AssigneeID.Set, Value: idPtr(req.AssigneeID.Value)},
+	}
 	if req.DueDate.Set {
 		var ok bool
-		if dueDate.Value, ok = parseDueDate(w, req.DueDate.Value); !ok {
+		if edit.DueDate.Value, ok = parseDueDate(w, req.DueDate.Value); !ok {
 			return
 		}
 	}
+	if req.LabelIDs != nil {
+		labels := ids(*req.LabelIDs)
+		edit.LabelIDs = &labels
+	}
 
-	actorID := uuid.UUID(currentUser(r))
-	task, err := h.tasks.Update(r.Context(), uuid.UUID(pathID(r)), service.UpdateInput{
-		Title: req.Title, Description: req.Description, Priority: req.Priority,
-		DueDate: dueDate, AssigneeID: service.Optional[uuid.UUID](req.AssigneeID),
-		LabelIDs: req.LabelIDs, Archived: req.Archived,
-		WorkspaceID: workspaceID(r), Version: *req.Version, ActorID: actorID,
-	})
+	t, err := h.tasks.Update(r.Context(), access(r), pathID(r), *req.Version, edit)
 	if err != nil {
 		writeTaskError(w, r, "update task", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newTaskResponse(fromServiceTask(task)))
+	WriteJSON(w, http.StatusOK, newTaskResponse(t))
 }
 
 // move: PATCH /tasks/{id}/move with {"columnId", "afterTaskId"?, "beforeTaskId"?, "version"}.
@@ -132,20 +130,19 @@ func (h *taskHandler) move(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID := uuid.UUID(currentUser(r))
-	task, err := h.tasks.Move(r.Context(), uuid.UUID(pathID(r)), service.MoveInput{
-		ColumnID: *req.ColumnID, AfterTaskID: req.AfterTaskID, BeforeTaskID: req.BeforeTaskID,
-		Version: *req.Version, ActorID: actorID,
+	t, err := h.tasks.Move(r.Context(), access(r), pathID(r), task.MoveInput{
+		ColumnID: domain.ID(*req.ColumnID), AfterTaskID: idPtr(req.AfterTaskID), BeforeTaskID: idPtr(req.BeforeTaskID),
+		Version: *req.Version,
 	})
 	if err != nil {
 		writeTaskError(w, r, "move task", err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newTaskResponse(fromServiceTask(task)))
+	WriteJSON(w, http.StatusOK, newTaskResponse(t))
 }
 
 func (h *taskHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.tasks.Delete(r.Context(), uuid.UUID(pathID(r))); err != nil {
+	if err := h.tasks.Delete(r.Context(), access(r), pathID(r)); err != nil {
 		writeTaskError(w, r, "delete task", err)
 		return
 	}
@@ -166,7 +163,7 @@ func parseDueDate(w http.ResponseWriter, s *string) (*time.Time, bool) {
 	if s == nil {
 		return nil, true
 	}
-	d, err := time.Parse(service.DateLayout, *s)
+	d, err := time.Parse(domain.DateLayout, *s)
 	if err != nil {
 		WriteValidationError(w, map[string]string{"due_date": "La fecha debe tener el formato AAAA-MM-DD"})
 		return nil, false
@@ -174,49 +171,40 @@ func parseDueDate(w http.ResponseWriter, s *string) (*time.Time, bool) {
 	return &d, true
 }
 
+// writeTaskError maps errors.Is(err, domain.ErrConflict) to 409 with the
+// task's current state, then defers to the board errors.
 func writeTaskError(w http.ResponseWriter, r *http.Request, op string, err error) {
-	if conflict, ok := errors.AsType[*service.ConflictError](err); ok {
+	if conflict, ok := errors.AsType[*domain.ConflictError](err); ok {
 		detail := errorDetail{Code: CodeVersionConflict, Message: "La tarea cambió desde que la cargaste"}
-		if conflict.Reason == service.ConflictNeighbors {
+		if conflict.Reason == domain.ConflictNeighbors {
 			detail = errorDetail{Code: CodeNeighborsChanged, Message: "Las tareas vecinas cambiaron de lugar; recarga la columna"}
 		}
-		WriteJSON(w, http.StatusConflict, conflictResponse{Error: detail, Current: newTaskResponse(fromServiceTask(conflict.Current))})
+		WriteJSON(w, http.StatusConflict, conflictResponse{Error: detail, Current: newTaskResponse(conflict.Current)})
 		return
 	}
 	switch {
 	// Only reachable if the resource was deleted after authorization.
-	case errors.Is(err, service.ErrTaskNotFound):
+	case errors.Is(err, domain.ErrTaskNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "La tarea no existe")
-	case errors.Is(err, service.ErrColumnNotFound):
+	case errors.Is(err, domain.ErrColumnNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "La columna no existe")
 	default:
-		writeBoardError(w, r, op, err) // validation errors and 500s
+		writeBoardError(w, r, op, err) // validation, authorization and 500s
 	}
 }
 
-// fromServiceTask maps the task service's rows to the domain entity the
-// responses are built from. Temporary: it goes away when the task use cases
-// move to internal/app.
-func fromServiceTask(t service.TaskDetail) domain.TaskDetail {
-	opt := func(id uuid.NullUUID) *domain.ID {
-		if !id.Valid {
-			return nil
-		}
-		d := domain.ID(id.UUID)
-		return &d
+func idPtr(id *uuid.UUID) *domain.ID {
+	if id == nil {
+		return nil
 	}
-	labels := make([]domain.Label, len(t.Labels))
-	for i, l := range t.Labels {
-		labels[i] = domain.Label{ID: domain.ID(l.ID), BoardID: domain.ID(l.BoardID), Name: l.Name, Color: l.Color, CreatedAt: l.CreatedAt}
+	d := domain.ID(*id)
+	return &d
+}
+
+func ids(in []uuid.UUID) []domain.ID {
+	out := make([]domain.ID, len(in))
+	for i, id := range in {
+		out[i] = domain.ID(id)
 	}
-	return domain.TaskDetail{
-		Task: domain.Task{
-			ID: domain.ID(t.ID), ColumnID: domain.ID(t.ColumnID), Title: t.Title, Description: t.Description,
-			Position: t.Position, Version: t.Version, Priority: domain.Priority(t.Priority),
-			DueDate: t.DueDate, AssigneeID: opt(t.AssigneeID), ArchivedAt: t.ArchivedAt,
-			CreatedBy: opt(t.CreatedBy), CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
-		},
-		AssigneeName: t.AssigneeName,
-		Labels:       labels,
-	}
+	return out
 }

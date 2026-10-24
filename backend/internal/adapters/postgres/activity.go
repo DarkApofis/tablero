@@ -6,11 +6,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
-// Activity implements the activity_log ports: reading a board's log.
+// Activity implements the activity_log ports: appending entries (in the
+// transaction of the change) and reading a board's log.
 type Activity struct{ conn }
 
 func NewActivity(pool *pgxpool.Pool) *Activity { return &Activity{conn{pool}} }

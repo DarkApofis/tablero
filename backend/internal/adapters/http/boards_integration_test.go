@@ -21,12 +21,12 @@ import (
 
 	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
+	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
-	"github.com/DarkApofis/tablero/backend/internal/db"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 type dbEnv struct {
@@ -35,7 +35,7 @@ type dbEnv struct {
 	q      *db.Queries
 	tokens *token.Issuer
 	boards *board.Service
-	tasks  *service.TaskService
+	tasks  *task.Service
 	router http.Handler
 }
 
@@ -50,7 +50,8 @@ func newDBEnv(t *testing.T) *dbEnv {
 	tokens := token.NewIssuer(testSecret, 15*time.Minute)
 	txm := postgres.NewTxManager(pool)
 	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), txm)
-	tasks := service.NewTaskService(pool)
+	workspaces := postgres.NewWorkspaces(pool)
+	tasks := task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, postgres.NewActivity(pool), txm, events.Noop{}, systemClock{})
 	return &dbEnv{
 		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks,
 		router: NewRouter(Deps{

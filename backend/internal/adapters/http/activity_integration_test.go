@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/service"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 func (f *taskFixture) activity(board uuid.UUID, query string, as testUser) activityPageResponse {
@@ -88,27 +88,27 @@ func TestActivityRecordsTaskChanges(t *testing.T) {
 		t.Errorf("actor name = %q", page.Items[3].Actor.Name)
 	}
 
-	created := decodePayload[service.TaskCreatedPayload](t, page.Items[3].Payload)
-	if created.TaskID != task.ID || created.Title != "Login" || created.ColumnID != f.todo || created.Position != 1024 {
+	created := decodePayload[domain.TaskCreatedPayload](t, page.Items[3].Payload)
+	if created.TaskID != domain.ID(task.ID) || created.Title != "Login" || created.ColumnID != domain.ID(f.todo) || created.Position != 1024 {
 		t.Errorf("created payload = %+v", created)
 	}
 
-	titleEdit := decodePayload[service.TaskUpdatedPayload](t, page.Items[2].Payload)
+	titleEdit := decodePayload[domain.TaskUpdatedPayload](t, page.Items[2].Payload)
 	if titleEdit.Version != 2 || len(titleEdit.Changes) != 1 ||
-		titleEdit.Changes["title"] != (service.FieldChange{From: "Login", To: "Login con Google"}) {
+		titleEdit.Changes["title"] != (domain.FieldChange{From: "Login", To: "Login con Google"}) {
 		t.Errorf("title edit payload = %+v", titleEdit)
 	}
 
-	descEdit := decodePayload[service.TaskUpdatedPayload](t, page.Items[1].Payload)
+	descEdit := decodePayload[domain.TaskUpdatedPayload](t, page.Items[1].Payload)
 	if descEdit.Version != 3 || len(descEdit.Changes) != 1 ||
-		descEdit.Changes["description"] != (service.FieldChange{From: "desc Login", To: "OAuth"}) {
+		descEdit.Changes["description"] != (domain.FieldChange{From: "desc Login", To: "OAuth"}) {
 		t.Errorf("description edit payload = %+v", descEdit)
 	}
 
-	move := decodePayload[service.TaskMovedPayload](t, page.Items[0].Payload)
+	move := decodePayload[domain.TaskMovedPayload](t, page.Items[0].Payload)
 	if move.Version != 4 || move.Title != "Login con Google" ||
-		move.From != (service.TaskPlacement{ColumnID: f.todo, Position: 1024}) ||
-		move.To != (service.TaskPlacement{ColumnID: f.doing, Position: moved.Position}) {
+		move.From != (domain.TaskPlacement{ColumnID: domain.ID(f.todo), Position: 1024}) ||
+		move.To != (domain.TaskPlacement{ColumnID: domain.ID(f.doing), Position: moved.Position}) {
 		t.Errorf("move payload = %+v", move)
 	}
 }
@@ -158,7 +158,7 @@ func TestActivityIsWrittenInTheSameTransaction(t *testing.T) {
 	}
 
 	t.Run("create", func(t *testing.T) {
-		rejectType(t, service.ActivityTaskCreated)
+		rejectType(t, domain.ActivityTaskCreated)
 		rec := f.do("POST", "/columns/"+f.todo.String()+"/tasks", `{"title":"Fantasma"}`, f.ana)
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500", rec.Code)
@@ -169,7 +169,7 @@ func TestActivityIsWrittenInTheSameTransaction(t *testing.T) {
 	})
 
 	t.Run("update", func(t *testing.T) {
-		rejectType(t, service.ActivityTaskUpdated)
+		rejectType(t, domain.ActivityTaskUpdated)
 		rec := f.patch(task.ID, map[string]any{"title": "Cambiada", "version": 1}, f.ana)
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500", rec.Code)
@@ -180,7 +180,7 @@ func TestActivityIsWrittenInTheSameTransaction(t *testing.T) {
 	})
 
 	t.Run("move", func(t *testing.T) {
-		rejectType(t, service.ActivityTaskMoved)
+		rejectType(t, domain.ActivityTaskMoved)
 		rec := f.move(task.ID, map[string]any{"columnId": f.doing, "version": 1}, f.ana)
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500", rec.Code)
@@ -201,7 +201,7 @@ func TestActivityPagination(t *testing.T) {
 		f.createTask(f.todo, title, f.ana)
 	}
 	titleOf := func(item activityItem) string {
-		return decodePayload[service.TaskCreatedPayload](t, item.Payload).Title
+		return decodePayload[domain.TaskCreatedPayload](t, item.Payload).Title
 	}
 
 	var got []string
@@ -275,7 +275,7 @@ func TestActivityIsScopedToTheBoard(t *testing.T) {
 	f.createTask(otherCol, "allá", f.ana)
 
 	page := f.activity(f.board, "", f.ana)
-	if len(page.Items) != 1 || decodePayload[service.TaskCreatedPayload](t, page.Items[0].Payload).Title != "aquí" {
+	if len(page.Items) != 1 || decodePayload[domain.TaskCreatedPayload](t, page.Items[0].Payload).Title != "aquí" {
 		t.Errorf("items = %+v", page.Items)
 	}
 }

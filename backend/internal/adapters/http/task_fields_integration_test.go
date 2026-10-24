@@ -21,10 +21,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
-	"github.com/DarkApofis/tablero/backend/internal/db"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
-	"github.com/DarkApofis/tablero/backend/internal/service"
 )
 
 // label creates a label on the board through the API.
@@ -60,13 +59,13 @@ func (f *taskFixture) patchOK(id uuid.UUID, body map[string]any, as testUser) ta
 }
 
 // lastChange returns the changes of the newest activity entry, which must be a task_updated.
-func (f *taskFixture) lastChanges() map[string]service.FieldChange {
+func (f *taskFixture) lastChanges() map[string]domain.FieldChange {
 	f.t.Helper()
 	page := f.activity(f.board, "limit=1", f.admin)
-	if len(page.Items) != 1 || page.Items[0].Type != service.ActivityTaskUpdated {
+	if len(page.Items) != 1 || page.Items[0].Type != domain.ActivityTaskUpdated {
 		f.t.Fatalf("last activity = %+v", page.Items)
 	}
-	return decodePayload[service.TaskUpdatedPayload](f.t, page.Items[0].Payload).Changes
+	return decodePayload[domain.TaskUpdatedPayload](f.t, page.Items[0].Payload).Changes
 }
 
 func labelNames(ls []labelResponse) string {
@@ -119,9 +118,9 @@ func TestCreateTaskWithFields(t *testing.T) {
 		t.Errorf("GET differs from create:\n got  %+v\n want %+v", got, task)
 	}
 
-	created := decodePayload[service.TaskCreatedPayload](t, f.activity(f.board, "limit=1", f.admin).Items[0].Payload)
+	created := decodePayload[domain.TaskCreatedPayload](t, f.activity(f.board, "limit=1", f.admin).Items[0].Payload)
 	if created.Priority != "urgent" || created.DueDate == nil || *created.DueDate != "2026-11-15" ||
-		created.AssigneeID == nil || *created.AssigneeID != f.beto.ID ||
+		created.AssigneeID == nil || *created.AssigneeID != domain.ID(f.beto.ID) ||
 		asJSON(created.LabelIDs) != asJSON(sortedIDs(bug.ID, front.ID)) {
 		t.Errorf("created payload = %+v", created)
 	}
@@ -570,7 +569,7 @@ func TestRemovingMemberUnassignsTheirTasks(t *testing.T) {
 		t.Errorf("logged change = %+v", ch)
 	}
 	page := f.activity(otherBoard, "limit=1", f.admin)
-	if p := decodePayload[service.TaskUpdatedPayload](t, page.Items[0].Payload); p.TaskID != alsoMine.ID || p.Version != alsoMine.Version+1 ||
+	if p := decodePayload[domain.TaskUpdatedPayload](t, page.Items[0].Payload); p.TaskID != domain.ID(alsoMine.ID) || p.Version != alsoMine.Version+1 ||
 		page.Items[0].Actor == nil || page.Items[0].Actor.ID != f.admin.ID {
 		t.Errorf("other board entry = %+v / %s", page.Items[0], page.Items[0].Payload)
 	}

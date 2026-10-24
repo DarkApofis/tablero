@@ -17,7 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarkApofis/tablero/backend/internal/db"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db"
 )
 
 // taskFixture is a workspace with an admin, two members (the "two clients"),
