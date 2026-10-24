@@ -65,6 +65,16 @@ func (e WorkspaceRole) Valid() bool {
 	return false
 }
 
+type ActivityLog struct {
+	ID          int64
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
+	ActorID     uuid.NullUUID
+	Type        string
+	Payload     []byte
+	CreatedAt   time.Time
+}
+
 type Board struct {
 	ID          uuid.UUID
 	WorkspaceID uuid.UUID

@@ -18,6 +18,12 @@ SELECT id FROM columns
 WHERE id = $1
 FOR UPDATE;
 
+-- name: GetColumnLocation :one
+SELECT c.board_id, b.workspace_id
+FROM columns c
+JOIN boards b ON b.id = c.board_id
+WHERE c.id = $1;
+
 -- name: GetColumnWorkspaceID :one
 SELECT b.workspace_id
 FROM columns c

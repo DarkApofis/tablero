@@ -56,6 +56,7 @@ func run() error {
 			Workspaces:   service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 			Boards:       service.NewBoardService(pool),
 			Tasks:        service.NewTaskService(pool),
+			Activity:     service.NewActivityService(pool),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

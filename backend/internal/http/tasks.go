@@ -73,8 +73,9 @@ func (h *taskHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorID, _ := auth.UserID(r.Context())
 	task, err := h.tasks.Update(r.Context(), pathID(r), service.UpdateInput{
-		Title: req.Title, Description: req.Description, Version: *req.Version,
+		Title: req.Title, Description: req.Description, Version: *req.Version, ActorID: actorID,
 	})
 	if err != nil {
 		writeTaskError(w, r, "update task", err)
@@ -102,8 +103,10 @@ func (h *taskHandler) move(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorID, _ := auth.UserID(r.Context())
 	task, err := h.tasks.Move(r.Context(), pathID(r), service.MoveInput{
-		ColumnID: *req.ColumnID, AfterTaskID: req.AfterTaskID, BeforeTaskID: req.BeforeTaskID, Version: *req.Version,
+		ColumnID: *req.ColumnID, AfterTaskID: req.AfterTaskID, BeforeTaskID: req.BeforeTaskID,
+		Version: *req.Version, ActorID: actorID,
 	})
 	if err != nil {
 		writeTaskError(w, r, "move task", err)

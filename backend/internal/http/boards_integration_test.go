@@ -53,6 +53,7 @@ func newDBEnv(t *testing.T) *dbEnv {
 			Workspaces: service.NewWorkspaceService(service.NewPostgresWorkspaceStore(pool)),
 			Boards:     boards,
 			Tasks:      tasks,
+			Activity:   service.NewActivityService(pool),
 		}),
 	}
 }

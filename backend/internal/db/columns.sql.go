@@ -68,6 +68,25 @@ func (q *Queries) GetColumn(ctx context.Context, id uuid.UUID) (Column, error) {
 	return i, err
 }
 
+const getColumnLocation = `-- name: GetColumnLocation :one
+SELECT c.board_id, b.workspace_id
+FROM columns c
+JOIN boards b ON b.id = c.board_id
+WHERE c.id = $1
+`
+
+type GetColumnLocationRow struct {
+	BoardID     uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+func (q *Queries) GetColumnLocation(ctx context.Context, id uuid.UUID) (GetColumnLocationRow, error) {
+	row := q.db.QueryRow(ctx, getColumnLocation, id)
+	var i GetColumnLocationRow
+	err := row.Scan(&i.BoardID, &i.WorkspaceID)
+	return i, err
+}
+
 const getColumnWorkspaceID = `-- name: GetColumnWorkspaceID :one
 SELECT b.workspace_id
 FROM columns c

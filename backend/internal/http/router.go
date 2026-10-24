@@ -16,6 +16,7 @@ type Deps struct {
 	Workspaces   *service.WorkspaceService
 	Boards       *service.BoardService
 	Tasks        *service.TaskService
+	Activity     *service.ActivityService
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
@@ -53,6 +54,9 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("PATCH /columns/{id}", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.renameColumn))
 	mux.Handle("DELETE /columns/{id}", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.deleteColumn))
 	mux.Handle("POST /columns/{id}/move", guarded(bh.columnWorkspace, auth.ActionManageBoards, bh.moveColumn))
+
+	ach := &activityHandler{activity: d.Activity}
+	mux.Handle("GET /boards/{id}/activity", guarded(bh.boardWorkspace, auth.ActionRead, ach.list))
 
 	th := &taskHandler{tasks: d.Tasks}
 	mux.Handle("POST /columns/{id}/tasks", guarded(bh.columnWorkspace, auth.ActionEditTasks, th.create))

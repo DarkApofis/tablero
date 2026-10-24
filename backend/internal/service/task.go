@@ -105,7 +105,12 @@ func (s *TaskService) Create(ctx context.Context, in CreateTaskInput) (db.Task, 
 		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == pgForeignKeyViolation {
 			return ErrColumnNotFound
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return logActivity(ctx, q, task.ColumnID, in.CreatedBy, ActivityTaskCreated, TaskCreatedPayload{
+			TaskID: task.ID, Title: task.Title, ColumnID: task.ColumnID, Position: task.Position,
+		})
 	})
 	return task, err
 }
@@ -116,41 +121,72 @@ type UpdateInput struct {
 	Title       *string
 	Description *string
 	Version     int32
+	ActorID     uuid.UUID
 }
 
 // Update edits title and/or description with optimistic concurrency: it only
 // applies if Version is still current, otherwise it returns *ConflictError
-// with the task as it is now.
+// with the task as it is now. The change and its activity entry commit together.
 func (s *TaskService) Update(ctx context.Context, taskID uuid.UUID, in UpdateInput) (db.Task, error) {
 	if in.Title == nil && in.Description == nil {
 		return db.Task{}, &ValidationError{Fields: map[string]string{"title": "Indica title y/o description"}}
 	}
 
-	// The unchanged field is filled in from the stored task. If that read is
-	// already at another version, the UPDATE below fails and we report it.
-	current, err := s.Get(ctx, taskID)
-	if err != nil {
-		return db.Task{}, err
-	}
-	title, description := current.Title, current.Description
-	if in.Title != nil {
-		title = *in.Title
-	}
-	if in.Description != nil {
-		description = *in.Description
-	}
-	if title, description, err = validTaskContent(title, description); err != nil {
-		return db.Task{}, err
-	}
+	var updated db.Task
+	err := db.InTx(ctx, s.pool, pgx.TxOptions{}, func(q *db.Queries) error {
+		// The unchanged field is filled in from the stored task. If that read
+		// is at another version, the UPDATE below matches no row. If it is at
+		// in.Version and the UPDATE succeeds, it is exactly the previous
+		// state, which makes the logged diff exact.
+		before, err := q.GetTask(ctx, taskID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("get task: %w", err)
+		}
+		title, description := before.Title, before.Description
+		if in.Title != nil {
+			title = *in.Title
+		}
+		if in.Description != nil {
+			description = *in.Description
+		}
+		if title, description, err = validTaskContent(title, description); err != nil {
+			return err
+		}
 
-	updated, err := s.q.UpdateTaskContent(ctx, db.UpdateTaskContentParams{
-		ID: taskID, Version: in.Version, Title: title, Description: description,
+		updated, err = q.UpdateTaskContent(ctx, db.UpdateTaskContentParams{
+			ID: taskID, Version: in.Version, Title: title, Description: description,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errVersionMismatch
+		}
+		if err != nil {
+			return err
+		}
+
+		changes := map[string]FieldChange{}
+		if before.Title != updated.Title {
+			changes["title"] = FieldChange{From: before.Title, To: updated.Title}
+		}
+		if before.Description != updated.Description {
+			changes["description"] = FieldChange{From: before.Description, To: updated.Description}
+		}
+		return logActivity(ctx, q, updated.ColumnID, in.ActorID, ActivityTaskUpdated, TaskUpdatedPayload{
+			TaskID: updated.ID, Title: updated.Title, Version: updated.Version, Changes: changes,
+		})
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, errVersionMismatch) {
+		// Read the current state after the rollback, outside the transaction.
 		return db.Task{}, s.conflict(ctx, taskID, ConflictVersion)
 	}
 	return updated, err
 }
+
+// errVersionMismatch aborts the update transaction; Update turns it into a
+// *ConflictError with fresh state.
+var errVersionMismatch = errors.New("version mismatch")
 
 // MoveInput places a task in ColumnID between AfterTaskID and BeforeTaskID.
 // With only one of them, the other neighbor is whatever is adjacent to it now;
@@ -160,6 +196,7 @@ type MoveInput struct {
 	AfterTaskID  *uuid.UUID
 	BeforeTaskID *uuid.UUID
 	Version      int32
+	ActorID      uuid.UUID
 }
 
 // Move changes a task's column and/or position under the same version guard
@@ -215,7 +252,16 @@ func (s *TaskService) Move(ctx context.Context, taskID uuid.UUID, in MoveInput) 
 				moved, err = q.MoveTask(ctx, db.MoveTaskParams{
 					ID: taskID, Version: in.Version, ColumnID: target.ID, Position: pos,
 				})
-				return err // the row is locked and the version checked, so no ErrNoRows here
+				if err != nil {
+					return err // the row is locked and the version checked, so no ErrNoRows here
+				}
+				// task.Position is pre-rebalance; it is where the task was as far
+				// as anyone outside this transaction could have seen.
+				return logActivity(ctx, q, moved.ColumnID, in.ActorID, ActivityTaskMoved, TaskMovedPayload{
+					TaskID: moved.ID, Title: moved.Title, Version: moved.Version,
+					From: TaskPlacement{ColumnID: task.ColumnID, Position: task.Position},
+					To:   TaskPlacement{ColumnID: moved.ColumnID, Position: moved.Position},
+				})
 			}
 			if attempt > 0 {
 				return errors.New("no room between tasks even after rebalancing")
