@@ -50,7 +50,7 @@ Cómo está hecho (`GET /boards/{id}/events`):
 - **Timeouts:** el servidor tiene `WriteTimeout` de 30 s para las respuestas normales. El stream lo reemplaza en su propia conexión con `http.ResponseController`: antes de cada escritura fija un plazo de 10 s y después hace `Flush`. El stream puede durar indefinidamente, pero una conexión muerta se detecta en la siguiente escritura. Un test lo comprueba con un `WriteTimeout` de 150 ms: sin el `ResponseController`, el stream se corta.
 - **Fin limpio:** el stream termina cuando se cancela el contexto (el cliente se desconecta), cuando el hub cierra el canal o al apagar el servidor (`RegisterOnShutdown(hub.Close)`), y siempre cancela su suscripción.
 - **Varias instancias:** con `EVENTS_BACKEND=postgres` los eventos y la presencia se comparten por `LISTEN/NOTIFY` (decisión 8).
-- **Límites conocidos** (todos, con las cifras de la prueba de carga, en la decisión 9): los ids no son consecutivos por board (la secuencia es de toda la tabla); solo crecen. El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. Cuando exista `/auth/refresh`, el cliente renovará la cookie antes de reconectar.
+- **Límites conocidos** (todos, con las cifras de la prueba de carga, en la decisión 9): los ids no son consecutivos por board (la secuencia es de toda la tabla); solo crecen. El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. El cliente renueva la cookie con `/auth/refresh` antes de reconectar.
 
 ## 4. Autenticación: JWT de acceso corto y refresh token opaco en cookie
 
@@ -58,7 +58,10 @@ Cómo está hecho (`GET /boards/{id}/events`):
 - **Access token:** JWT HS256 de 15 minutos con `sub` = id de usuario e `iss` = `tablero`. Al verificar se exige HS256 (rechaza `alg: none` y otros algoritmos), el emisor y la expiración. El cliente lo envía en `Authorization: Bearer`.
 - **Refresh token:** valor aleatorio de 32 bytes en la cookie `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`, 30 días). En la base solo se guarda su **SHA-256** (tabla `refresh_tokens`), de modo que una fuga de la base no da sesiones válidas. `Path=/auth` evita que viaje en el resto de peticiones.
 - **Login sin pistas:** cualquier fallo (correo inexistente, contraseña incorrecta, campos vacíos) responde el mismo `401` con el mismo cuerpo, "Correo o contraseña incorrectos". Si el correo no existe se verifica igualmente un hash ficticio, para que el tiempo de respuesta no delate qué cuentas existen.
-- **Pendiente:** `/auth/refresh` (rotación del refresh token) y `/auth/logout` (revocación); la tabla ya tiene `revoked_at` para ello.
+- **Renovación con rotación:** `POST /auth/refresh` canjea la cookie por una sesión nueva y el refresh token usado queda revocado. Revocar el viejo e insertar el nuevo es **una sola sentencia** (`UPDATE … RETURNING` dentro de un CTE seguido del `INSERT`), así que dos renovaciones simultáneas con el mismo token no pueden ganar ambas.
+- **Detección de reutilización:** si vuelve un token rotado hace más de 30 s (`auth.ReuseGrace`), se asume robado y se revocan todas las sesiones del usuario (se registra un `WARN`). Dentro de esos 30 s solo responde 401: cubre una respuesta perdida o dos pestañas renovando a la vez, a costa de no detectar un robo usado en esa ventana. El frontend además serializa las renovaciones entre pestañas para no caer en ese caso.
+- **Cierre de sesión:** `POST /auth/logout` revoca el refresh token y borra las dos cookies. No exige access token (puede haber caducado) y responde 204 aunque no haya sesión. Un 401 de `/auth/refresh` también borra las cookies.
+- **Pendiente:** purgar las filas caducadas o revocadas de `refresh_tokens`.
 
 **Por qué:** un access token corto sin estado evita consultar la base en cada petición, y el refresh token largo queda fuera del alcance de JavaScript (`HttpOnly`) y es revocable porque vive en la base. El registro sí revela si un correo ya existe (409); evitarlo exigiría un flujo con confirmación por correo.
 

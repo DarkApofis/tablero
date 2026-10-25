@@ -47,6 +47,8 @@ func NewRouter(d Deps) http.Handler {
 	ah := &authHandler{auth: d.Auth, cookieSecure: d.CookieSecure}
 	mux.HandleFunc("POST /auth/register", ah.register)
 	mux.HandleFunc("POST /auth/login", ah.login)
+	mux.HandleFunc("POST /auth/refresh", ah.refresh)
+	mux.HandleFunc("POST /auth/logout", ah.logout)
 	mux.Handle("GET /me", requireAuth(d.Auth, http.HandlerFunc(ah.me)))
 
 	authed := func(h http.HandlerFunc) http.Handler { return requireAuth(d.Auth, h) }

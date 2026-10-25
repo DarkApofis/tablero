@@ -27,3 +27,78 @@ func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshToken
 	_, err := q.db.Exec(ctx, createRefreshToken, arg.UserID, arg.TokenHash, arg.ExpiresAt)
 	return err
 }
+
+const revokeRefreshToken = `-- name: RevokeRefreshToken :exec
+UPDATE refresh_tokens
+SET revoked_at = $1
+WHERE token_hash = $2 AND revoked_at IS NULL
+`
+
+type RevokeRefreshTokenParams struct {
+	Now       *time.Time
+	TokenHash []byte
+}
+
+func (q *Queries) RevokeRefreshToken(ctx context.Context, arg RevokeRefreshTokenParams) error {
+	_, err := q.db.Exec(ctx, revokeRefreshToken, arg.Now, arg.TokenHash)
+	return err
+}
+
+const revokeUserRefreshTokensOnReuse = `-- name: RevokeUserRefreshTokensOnReuse :execrows
+UPDATE refresh_tokens
+SET revoked_at = $1
+WHERE revoked_at IS NULL
+  AND user_id = (
+    SELECT r.user_id FROM refresh_tokens r
+    WHERE r.token_hash = $2 AND r.revoked_at < $3
+  )
+`
+
+type RevokeUserRefreshTokensOnReuseParams struct {
+	Now           *time.Time
+	TokenHash     []byte
+	RevokedBefore *time.Time
+}
+
+// If the token was revoked before @revoked_before, revokes every live token
+// of its user.
+func (q *Queries) RevokeUserRefreshTokensOnReuse(ctx context.Context, arg RevokeUserRefreshTokensOnReuseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeUserRefreshTokensOnReuse, arg.Now, arg.TokenHash, arg.RevokedBefore)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rotateRefreshToken = `-- name: RotateRefreshToken :one
+WITH old AS (
+    UPDATE refresh_tokens AS t
+    SET revoked_at = $3
+    WHERE t.token_hash = $4 AND t.revoked_at IS NULL AND t.expires_at > $3
+    RETURNING t.user_id
+)
+INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+SELECT user_id, $1, $2 FROM old
+RETURNING user_id
+`
+
+type RotateRefreshTokenParams struct {
+	NewHash   []byte
+	ExpiresAt time.Time
+	Now       *time.Time
+	OldHash   []byte
+}
+
+// Revokes a live token and stores its replacement in one statement, so two
+// concurrent refreshes with the same token cannot both succeed.
+func (q *Queries) RotateRefreshToken(ctx context.Context, arg RotateRefreshTokenParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, rotateRefreshToken,
+		arg.NewHash,
+		arg.ExpiresAt,
+		arg.Now,
+		arg.OldHash,
+	)
+	var user_id uuid.UUID
+	err := row.Scan(&user_id)
+	return user_id, err
+}

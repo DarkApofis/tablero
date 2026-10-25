@@ -40,6 +40,24 @@ func (r *Users) Save(ctx context.Context, userID domain.ID, hash []byte, expires
 	})
 }
 
+func (r *Users) Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (domain.ID, error) {
+	id, err := r.q(ctx).RotateRefreshToken(ctx, db.RotateRefreshTokenParams{
+		OldHash: oldHash, NewHash: newHash, ExpiresAt: expiresAt, Now: &now,
+	})
+	return domain.ID(id), notFound(err, domain.ErrInvalidRefreshToken)
+}
+
+func (r *Users) Revoke(ctx context.Context, hash []byte, now time.Time) error {
+	return r.q(ctx).RevokeRefreshToken(ctx, db.RevokeRefreshTokenParams{TokenHash: hash, Now: &now})
+}
+
+func (r *Users) RevokeAllIfReused(ctx context.Context, hash []byte, revokedBefore, now time.Time) (bool, error) {
+	n, err := r.q(ctx).RevokeUserRefreshTokensOnReuse(ctx, db.RevokeUserRefreshTokensOnReuseParams{
+		TokenHash: hash, RevokedBefore: &revokedBefore, Now: &now,
+	})
+	return n > 0, err
+}
+
 func toUser(u db.User) domain.User {
 	return domain.User{ID: domain.ID(u.ID), Email: u.Email, Name: u.Name, PasswordHash: u.PasswordHash, CreatedAt: u.CreatedAt}
 }

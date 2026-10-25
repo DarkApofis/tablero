@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ const (
 	accessCookiePath = "/boards"
 
 	msgInvalidCredentials = "Correo o contraseña incorrectos"
+	msgInvalidSession     = "Sesión inválida o expirada"
 )
 
 // userResponse is the public shape of a user; never expose password_hash.
@@ -98,6 +100,41 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	h.writeSession(w, http.StatusOK, session)
 }
 
+// refresh trades the refresh_token cookie for a new session, rotating it.
+func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
+	var plain string
+	if c, err := r.Cookie(refreshCookieName); err == nil {
+		plain = c.Value
+	}
+	session, err := h.auth.Refresh(r.Context(), plain)
+	switch {
+	case errors.Is(err, domain.ErrInvalidRefreshToken):
+		if errors.Is(err, domain.ErrRefreshTokenReused) {
+			slog.Warn("refresh token reused; revoked all the user's sessions", "request_id", RequestID(r.Context()))
+		}
+		h.clearSessionCookies(w)
+		WriteError(w, http.StatusUnauthorized, CodeUnauthorized, msgInvalidSession)
+		return
+	case err != nil:
+		internalError(w, r, "refresh", err)
+		return
+	}
+	h.writeSession(w, http.StatusOK, session)
+}
+
+// logout revokes the refresh_token cookie and clears both session cookies.
+// It needs no access token, so an expired session can still end cleanly.
+func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(refreshCookieName); err == nil {
+		if err := h.auth.Logout(r.Context(), c.Value); err != nil {
+			internalError(w, r, "logout", err)
+			return
+		}
+	}
+	h.clearSessionCookies(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	user, err := h.auth.Me(r.Context(), currentUser(r))
 	switch {
@@ -142,6 +179,19 @@ func (h *authHandler) writeSession(w http.ResponseWriter, status int, s auth.Ses
 	})
 }
 
+func (h *authHandler) clearSessionCookies(w http.ResponseWriter) {
+	for _, c := range []struct{ name, path string }{
+		{refreshCookieName, refreshCookiePath},
+		{accessCookieName, accessCookiePath},
+	} {
+		http.SetCookie(w, &http.Cookie{
+			Name: c.name, Path: c.path, MaxAge: -1,
+			HttpOnly: true, Secure: h.cookieSecure, SameSite: http.SameSiteLaxMode,
+		})
+	}
+	w.Header().Set("Cache-Control", "no-store")
+}
+
 // Authenticator turns a bearer token into a user id; *auth.Service is one.
 type Authenticator interface {
 	Authenticate(token string) (domain.ID, error)
@@ -181,7 +231,7 @@ func authenticate(authn Authenticator, tokenOf func(*http.Request) (string, bool
 		userID, err := authn.Authenticate(token)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
-			WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "Sesión inválida o expirada")
+			WriteError(w, http.StatusUnauthorized, CodeUnauthorized, msgInvalidSession)
 			return
 		}
 

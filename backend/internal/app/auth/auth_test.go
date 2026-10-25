@@ -50,13 +50,65 @@ type refreshRecord struct {
 	userID    domain.ID
 	hash      string
 	expiresAt time.Time
+	revokedAt *time.Time
 }
 
-type fakeRefresh struct{ saved []refreshRecord }
+// fakeRefresh mimics the refresh_tokens table.
+type fakeRefresh struct{ saved []*refreshRecord }
 
 func (f *fakeRefresh) Save(_ context.Context, userID domain.ID, hash []byte, expiresAt time.Time) error {
-	f.saved = append(f.saved, refreshRecord{userID, string(hash), expiresAt})
+	f.saved = append(f.saved, &refreshRecord{userID: userID, hash: string(hash), expiresAt: expiresAt})
 	return nil
+}
+
+func (f *fakeRefresh) find(hash []byte) *refreshRecord {
+	for _, r := range f.saved {
+		if r.hash == string(hash) {
+			return r
+		}
+	}
+	return nil
+}
+
+func (f *fakeRefresh) Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (domain.ID, error) {
+	old := f.find(oldHash)
+	if old == nil || old.revokedAt != nil || !old.expiresAt.After(now) {
+		return domain.NilID, domain.ErrInvalidRefreshToken
+	}
+	old.revokedAt = &now
+	return old.userID, f.Save(ctx, old.userID, newHash, expiresAt)
+}
+
+func (f *fakeRefresh) Revoke(_ context.Context, hash []byte, now time.Time) error {
+	if r := f.find(hash); r != nil && r.revokedAt == nil {
+		r.revokedAt = &now
+	}
+	return nil
+}
+
+func (f *fakeRefresh) RevokeAllIfReused(_ context.Context, hash []byte, revokedBefore, now time.Time) (bool, error) {
+	r := f.find(hash)
+	if r == nil || r.revokedAt == nil || !r.revokedAt.Before(revokedBefore) {
+		return false, nil
+	}
+	revoked := false
+	for _, other := range f.saved {
+		if other.userID == r.userID && other.revokedAt == nil {
+			other.revokedAt = &now
+			revoked = true
+		}
+	}
+	return revoked, nil
+}
+
+func (f *fakeRefresh) live(userID domain.ID) int {
+	n := 0
+	for _, r := range f.saved {
+		if r.userID == userID && r.revokedAt == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // fakeHasher "hashes" by prefixing, and counts verifications.
@@ -95,9 +147,12 @@ func (f *fakeTokens) NewRefreshToken() (string, []byte, error) {
 	return plain, []byte("sha:" + plain), nil
 }
 
-type fixedClock struct{ t time.Time }
+func (f *fakeTokens) HashRefreshToken(plain string) []byte { return []byte("sha:" + plain) }
 
-func (c fixedClock) Now() time.Time { return c.t }
+// fixedClock reads the time through a pointer so tests can move it.
+type fixedClock struct{ t *time.Time }
+
+func (c fixedClock) Now() time.Time { return *c.t }
 
 type env struct {
 	svc     *auth.Service
@@ -115,7 +170,7 @@ func newEnv(t *testing.T) *env {
 		users: &fakeUsers{byID: map[domain.ID]domain.User{}}, refresh: &fakeRefresh{}, hasher: &fakeHasher{},
 		now: time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC),
 	}
-	svc, err := auth.NewService(e.users, e.refresh, e.hasher, &fakeTokens{}, fixedClock{e.now}, refreshTTL)
+	svc, err := auth.NewService(e.users, e.refresh, e.hasher, &fakeTokens{}, fixedClock{&e.now}, refreshTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,5 +293,111 @@ func TestMeAndAuthenticate(t *testing.T) {
 	}
 	if _, err := e.svc.Authenticate("forged"); !errors.Is(err, domain.ErrInvalidToken) {
 		t.Errorf("Authenticate(forged) err = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestRefreshRotatesToken(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.svc.Register(ctx, "ana@example.com", "Ana", "supersecreta")
+
+	e.now = e.now.Add(time.Hour)
+	s, err := e.svc.Refresh(ctx, reg.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.User.ID != reg.User.ID || s.AccessToken != "access-"+reg.User.ID.String() {
+		t.Errorf("session = %+v", s)
+	}
+	if s.RefreshToken == "" || s.RefreshToken == reg.RefreshToken {
+		t.Errorf("refresh token not rotated: %q", s.RefreshToken)
+	}
+	if !s.RefreshExpiresAt.Equal(e.now.Add(refreshTTL)) {
+		t.Errorf("refresh expiry = %v, want now+TTL", s.RefreshExpiresAt)
+	}
+	if old := e.refresh.find([]byte("sha:" + reg.RefreshToken)); old.revokedAt == nil {
+		t.Error("the used token was not revoked")
+	}
+	if n := e.refresh.live(reg.User.ID); n != 1 {
+		t.Errorf("live tokens = %d, want 1", n)
+	}
+}
+
+func TestRefreshRejectsInvalidTokens(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.svc.Register(ctx, "ana@example.com", "Ana", "supersecreta")
+
+	for name, token := range map[string]string{"empty": "", "unknown": "refresh-zzz"} {
+		if _, err := e.svc.Refresh(ctx, token); !errors.Is(err, domain.ErrInvalidRefreshToken) {
+			t.Errorf("%s: err = %v, want ErrInvalidRefreshToken", name, err)
+		}
+	}
+
+	e.now = e.now.Add(refreshTTL)
+	if _, err := e.svc.Refresh(ctx, reg.RefreshToken); !errors.Is(err, domain.ErrInvalidRefreshToken) {
+		t.Errorf("expired: err = %v, want ErrInvalidRefreshToken", err)
+	}
+}
+
+func TestRefreshReuse(t *testing.T) {
+	t.Run("within the grace period only fails", func(t *testing.T) {
+		e := newEnv(t)
+		ctx := context.Background()
+		reg, _ := e.svc.Register(ctx, "ana@example.com", "Ana", "supersecreta")
+		if _, err := e.svc.Refresh(ctx, reg.RefreshToken); err != nil {
+			t.Fatal(err)
+		}
+
+		e.now = e.now.Add(auth.ReuseGrace - time.Second)
+		_, err := e.svc.Refresh(ctx, reg.RefreshToken)
+		if !errors.Is(err, domain.ErrInvalidRefreshToken) || errors.Is(err, domain.ErrRefreshTokenReused) {
+			t.Errorf("err = %v, want plain ErrInvalidRefreshToken", err)
+		}
+		if n := e.refresh.live(reg.User.ID); n != 1 {
+			t.Errorf("live tokens = %d; the rotated session must survive", n)
+		}
+	})
+
+	t.Run("after the grace period revokes every session", func(t *testing.T) {
+		e := newEnv(t)
+		ctx := context.Background()
+		reg, _ := e.svc.Register(ctx, "ana@example.com", "Ana", "supersecreta")
+		if _, err := e.svc.Login(ctx, "ana@example.com", "supersecreta"); err != nil { // another device
+			t.Fatal(err)
+		}
+		rotated, err := e.svc.Refresh(ctx, reg.RefreshToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		e.now = e.now.Add(auth.ReuseGrace + time.Second)
+		if _, err := e.svc.Refresh(ctx, reg.RefreshToken); !errors.Is(err, domain.ErrRefreshTokenReused) {
+			t.Fatalf("err = %v, want ErrRefreshTokenReused", err)
+		}
+		if n := e.refresh.live(reg.User.ID); n != 0 {
+			t.Errorf("live tokens = %d, want 0", n)
+		}
+		if _, err := e.svc.Refresh(ctx, rotated.RefreshToken); !errors.Is(err, domain.ErrInvalidRefreshToken) {
+			t.Errorf("the token issued by the rotation still works: err = %v", err)
+		}
+	})
+}
+
+func TestLogoutRevokesToken(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.svc.Register(ctx, "ana@example.com", "Ana", "supersecreta")
+
+	if err := e.svc.Logout(ctx, reg.RefreshToken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Refresh(ctx, reg.RefreshToken); !errors.Is(err, domain.ErrInvalidRefreshToken) {
+		t.Errorf("refresh after logout: err = %v", err)
+	}
+	for _, token := range []string{"", "refresh-zzz", reg.RefreshToken} {
+		if err := e.svc.Logout(ctx, token); err != nil {
+			t.Errorf("Logout(%q) = %v, want nil", token, err)
+		}
 	}
 }

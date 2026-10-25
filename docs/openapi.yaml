@@ -11,7 +11,9 @@ info:
     `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`) y el mismo access
     token en la cookie `access_token` (`Path=/boards`), que **solo** acepta
     `GET /boards/{id}/events` porque `EventSource` no puede enviar cabeceras; el resto
-    de rutas exige la cabecera `Authorization`.
+    de rutas exige la cabecera `Authorization`. Cuando el access token caduca,
+    `POST /auth/refresh` lo renueva con la cookie y rota el refresh token;
+    `POST /auth/logout` lo revoca y borra las dos cookies.
 
     **Errores.** Todas las respuestas de error tienen la forma
     `{"error": {"code": "...", "message": "..."}}`; los errores de validación (422)
@@ -205,6 +207,56 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Renovar la sesión
+      operationId: refreshSession
+      description: |
+        Canjea la cookie `refresh_token` por una sesión nueva. El refresh token es de un
+        solo uso: queda revocado y la respuesta fija uno nuevo en la cookie (rotación).
+        Dos renovaciones simultáneas con el mismo token no pueden tener éxito ambas.
+
+        Si vuelve un token ya rotado hace más de 30 segundos, se asume robado y se
+        revocan **todas** las sesiones del usuario. Dentro de esos 30 segundos (una
+        respuesta perdida, dos pestañas renovando a la vez) solo responde 401.
+      security: []
+      responses:
+        "200":
+          description: Sesión renovada.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401":
+          description: |
+            Falta la cookie o el token no existe, caducó o está revocado (`unauthorized`).
+            La respuesta borra las dos cookies de sesión.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/ClearedCookies" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Cerrar sesión
+      operationId: logout
+      description: |
+        Revoca el refresh token de la cookie y borra las dos cookies de sesión. No exige
+        access token, para que una sesión caducada también pueda cerrarse. Sin cookie, o
+        con un token desconocido o ya revocado, responde igual.
+      security: []
+      responses:
+        "204":
+          description: Sesión cerrada.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/ClearedCookies" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /me:
@@ -983,6 +1035,10 @@ components:
       description: |
         Dos cookies: `refresh_token=<opaco>; Path=/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=...`
         y `access_token=<jwt>; Path=/boards; HttpOnly; Secure; SameSite=Lax; Max-Age=<vida del access token>`.
+      schema: { type: string }
+    ClearedCookies:
+      description: |
+        Borra `refresh_token` (`Path=/auth`) y `access_token` (`Path=/boards`) con `Max-Age=0`.
       schema: { type: string }
 
   responses:

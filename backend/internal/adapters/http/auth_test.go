@@ -25,6 +25,7 @@ type savedRefresh struct {
 	UserID    domain.ID
 	Hash      []byte
 	ExpiresAt time.Time
+	RevokedAt *time.Time
 }
 
 func newFakeStore() *fakeStore {
@@ -62,6 +63,46 @@ func (f *fakeStore) ByID(_ context.Context, id domain.ID) (domain.User, error) {
 func (f *fakeStore) Save(_ context.Context, userID domain.ID, hash []byte, expiresAt time.Time) error {
 	f.refresh = append(f.refresh, savedRefresh{UserID: userID, Hash: hash, ExpiresAt: expiresAt})
 	return nil
+}
+
+func (f *fakeStore) find(hash []byte) *savedRefresh {
+	for i := range f.refresh {
+		if bytes.Equal(f.refresh[i].Hash, hash) {
+			return &f.refresh[i]
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (domain.ID, error) {
+	old := f.find(oldHash)
+	if old == nil || old.RevokedAt != nil || !old.ExpiresAt.After(now) {
+		return domain.NilID, domain.ErrInvalidRefreshToken
+	}
+	old.RevokedAt = &now
+	return old.UserID, f.Save(ctx, old.UserID, newHash, expiresAt)
+}
+
+func (f *fakeStore) Revoke(_ context.Context, hash []byte, now time.Time) error {
+	if r := f.find(hash); r != nil && r.RevokedAt == nil {
+		r.RevokedAt = &now
+	}
+	return nil
+}
+
+func (f *fakeStore) RevokeAllIfReused(_ context.Context, hash []byte, revokedBefore, now time.Time) (bool, error) {
+	r := f.find(hash)
+	if r == nil || r.RevokedAt == nil || !r.RevokedAt.Before(revokedBefore) {
+		return false, nil
+	}
+	revoked := false
+	for i := range f.refresh {
+		if f.refresh[i].UserID == r.UserID && f.refresh[i].RevokedAt == nil {
+			f.refresh[i].RevokedAt = &now
+			revoked = true
+		}
+	}
+	return revoked, nil
 }
 
 type authEnv struct {
@@ -383,6 +424,121 @@ func TestRequireAuthPutsUserInContext(t *testing.T) {
 	if got != want {
 		t.Errorf("user id in context = %v, want %v", got, want)
 	}
+}
+
+// doWithCookie is do with the refresh_token cookie set to value.
+func (e authEnv) doWithCookie(method, path, value string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	req.AddCookie(&http.Cookie{Name: refreshCookieName, Value: value})
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// assertCookiesCleared checks that both session cookies are deleted on
+// their own paths (a cookie is only removed on the path it was set with).
+func assertCookiesCleared(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	cleared := map[string]string{}
+	for _, c := range rec.Result().Cookies() {
+		if c.MaxAge < 0 && c.Value == "" {
+			cleared[c.Name] = c.Path
+		}
+	}
+	if cleared[refreshCookieName] != refreshCookiePath || cleared[accessCookieName] != accessCookiePath {
+		t.Errorf("cleared cookies = %v, want refresh_token on /auth and access_token on /boards", cleared)
+	}
+}
+
+func TestRefresh(t *testing.T) {
+	e := newAuthEnv()
+	rec := e.do("POST", "/auth/register", jsonBody(map[string]string{
+		"email": "ana@example.com", "name": "Ana", "password": "supersecreta",
+	}), "")
+	first := refreshCookie(t, rec)
+	registered := decodeSession(t, rec)
+
+	rec = e.doWithCookie("POST", "/auth/refresh", first.Value)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+	rotated := refreshCookie(t, rec)
+	s := decodeSession(t, rec)
+	if s.User.ID != registered.User.ID {
+		t.Errorf("refreshed as %v, want %v", s.User.ID, registered.User.ID)
+	}
+	if id, err := e.tokens.Verify(s.AccessToken); err != nil || id != domain.ID(registered.User.ID) {
+		t.Errorf("access token: %v, %v", id, err)
+	}
+	if rotated.Value == first.Value || rotated.Path != refreshCookiePath || !rotated.HttpOnly {
+		t.Errorf("rotated cookie = %+v", rotated)
+	}
+
+	t.Run("the used token no longer works", func(t *testing.T) {
+		rec := e.doWithCookie("POST", "/auth/refresh", first.Value)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", rec.Code)
+		}
+		if got := decodeError(t, rec); got.Code != CodeUnauthorized {
+			t.Errorf("error = %+v", got)
+		}
+		assertCookiesCleared(t, rec)
+	})
+
+	t.Run("the rotated token works", func(t *testing.T) {
+		if rec := e.doWithCookie("POST", "/auth/refresh", rotated.Value); rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200; body = %s", rec.Code, rec.Body)
+		}
+	})
+}
+
+func TestRefreshWithoutValidCookie(t *testing.T) {
+	e := newAuthEnv()
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"no cookie":     e.do("POST", "/auth/refresh", "", ""),
+		"unknown token": e.doWithCookie("POST", "/auth/refresh", "not-a-token"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401; body = %s", rec.Code, rec.Body)
+			}
+			if got := decodeError(t, rec); got.Code != CodeUnauthorized {
+				t.Errorf("error = %+v", got)
+			}
+			assertCookiesCleared(t, rec)
+		})
+	}
+}
+
+func TestLogout(t *testing.T) {
+	e := newAuthEnv()
+	rec := e.do("POST", "/auth/register", jsonBody(map[string]string{
+		"email": "ana@example.com", "name": "Ana", "password": "supersecreta",
+	}), "")
+	cookie := refreshCookie(t, rec)
+
+	rec = e.doWithCookie("POST", "/auth/logout", cookie.Value)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body)
+	}
+	assertCookiesCleared(t, rec)
+	if stored := e.store.find(token.HashRefreshToken(cookie.Value)); stored == nil || stored.RevokedAt == nil {
+		t.Error("refresh token was not revoked")
+	}
+	if rec := e.doWithCookie("POST", "/auth/refresh", cookie.Value); rec.Code != http.StatusUnauthorized {
+		t.Errorf("refresh after logout: status = %d, want 401", rec.Code)
+	}
+
+	t.Run("without a session it still succeeds", func(t *testing.T) {
+		rec := e.do("POST", "/auth/logout", "", "")
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", rec.Code)
+		}
+		assertCookiesCleared(t, rec)
+	})
 }
 
 func withHeader(key, value string) *http.Request {

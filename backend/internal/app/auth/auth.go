@@ -1,5 +1,5 @@
-// Package auth holds the authentication use cases: register, login, the
-// current user and access-token verification.
+// Package auth holds the authentication use cases: register, login, session
+// refresh and logout, the current user and access-token verification.
 package auth
 
 import (
@@ -27,6 +27,15 @@ type UserRepository interface {
 type RefreshTokenRepository interface {
 	// Save stores the hash of a refresh token; the plain value is never stored.
 	Save(ctx context.Context, userID domain.ID, hash []byte, expiresAt time.Time) error
+	// Rotate atomically revokes the live (unrevoked, unexpired) token oldHash
+	// and stores newHash for the same user, whom it returns. If oldHash is not
+	// live it changes nothing and returns domain.ErrInvalidRefreshToken.
+	Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (domain.ID, error)
+	// Revoke revokes the token if it is not already; unknown tokens are ignored.
+	Revoke(ctx context.Context, hash []byte, now time.Time) error
+	// RevokeAllIfReused revokes every live token of the token's user if the
+	// token was revoked before revokedBefore, and reports whether it did.
+	RevokeAllIfReused(ctx context.Context, hash []byte, revokedBefore, now time.Time) (bool, error)
 }
 
 type PasswordHasher interface {
@@ -41,7 +50,14 @@ type TokenIssuer interface {
 	Verify(token string) (domain.ID, error)
 	// NewRefreshToken returns a random opaque token and the hash to store.
 	NewRefreshToken() (plain string, hash []byte, err error)
+	// HashRefreshToken is the hash NewRefreshToken returns for plain.
+	HashRefreshToken(plain string) []byte
 }
+
+// ReuseGrace is how long a rotated refresh token may come back without being
+// treated as stolen. It covers a client that lost the refresh response or two
+// tabs refreshing at once; later, the reuse revokes all the user's sessions.
+const ReuseGrace = 30 * time.Second
 
 type Clock interface {
 	Now() time.Time
@@ -128,6 +144,69 @@ func (s *Service) Login(ctx context.Context, email, password string) (Session, e
 		return Session{}, domain.ErrInvalidCredentials
 	}
 	return s.newSession(ctx, user)
+}
+
+// Refresh rotates a refresh token: the presented one is revoked and the new
+// session carries its replacement. It returns domain.ErrInvalidRefreshToken
+// for an unknown, expired or revoked token, and domain.ErrRefreshTokenReused
+// (which wraps it) when a token rotated more than ReuseGrace ago comes back.
+func (s *Service) Refresh(ctx context.Context, plain string) (Session, error) {
+	if plain == "" {
+		return Session{}, domain.ErrInvalidRefreshToken
+	}
+	oldHash := s.tokens.HashRefreshToken(plain)
+	now := s.clock.Now()
+
+	refresh, newHash, err := s.tokens.NewRefreshToken()
+	if err != nil {
+		return Session{}, fmt.Errorf("generate refresh token: %w", err)
+	}
+	refreshExp := now.Add(s.refreshTTL)
+	userID, err := s.refresh.Rotate(ctx, oldHash, newHash, refreshExp, now)
+	if errors.Is(err, domain.ErrInvalidRefreshToken) {
+		reused, rerr := s.refresh.RevokeAllIfReused(ctx, oldHash, now.Add(-ReuseGrace), now)
+		if rerr != nil {
+			return Session{}, fmt.Errorf("revoke sessions on reuse: %w", rerr)
+		}
+		if reused {
+			return Session{}, domain.ErrRefreshTokenReused
+		}
+		return Session{}, err
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("rotate refresh token: %w", err)
+	}
+
+	user, err := s.users.ByID(ctx, userID)
+	if errors.Is(err, domain.ErrUserNotFound) {
+		return Session{}, domain.ErrInvalidRefreshToken
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("get user: %w", err)
+	}
+	access, accessExp, err := s.tokens.Issue(user.ID)
+	if err != nil {
+		return Session{}, fmt.Errorf("issue access token: %w", err)
+	}
+	return Session{
+		User:             user,
+		AccessToken:      access,
+		AccessExpiresAt:  accessExp,
+		RefreshToken:     refresh,
+		RefreshExpiresAt: refreshExp,
+	}, nil
+}
+
+// Logout revokes the refresh token. An empty, unknown or already revoked
+// token is not an error: the session is over either way.
+func (s *Service) Logout(ctx context.Context, plain string) error {
+	if plain == "" {
+		return nil
+	}
+	if err := s.refresh.Revoke(ctx, s.tokens.HashRefreshToken(plain), s.clock.Now()); err != nil {
+		return fmt.Errorf("revoke refresh token: %w", err)
+	}
+	return nil
 }
 
 // Me returns the user behind an authenticated request, or

@@ -72,6 +72,9 @@ func (t *Issuer) NewRefreshToken() (plain string, hash []byte, err error) {
 	return plain, HashRefreshToken(plain), nil
 }
 
+// HashRefreshToken is the hash NewRefreshToken returns for plain.
+func (t *Issuer) HashRefreshToken(plain string) []byte { return HashRefreshToken(plain) }
+
 func HashRefreshToken(plain string) []byte {
 	sum := sha256.Sum256([]byte(plain))
 	return sum[:]

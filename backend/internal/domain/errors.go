@@ -42,6 +42,11 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	// ErrInvalidToken: the access token is malformed, forged or expired.
 	ErrInvalidToken = errors.New("invalid token")
+	// ErrInvalidRefreshToken: the refresh token is unknown, expired or revoked.
+	ErrInvalidRefreshToken = errors.New("invalid refresh token")
+	// ErrRefreshTokenReused: an already rotated refresh token came back, so it
+	// may have been stolen; every session of its user was revoked.
+	ErrRefreshTokenReused = fmt.Errorf("%w: reused", ErrInvalidRefreshToken)
 )
 
 // ValidationError maps field names to a human-readable problem.
