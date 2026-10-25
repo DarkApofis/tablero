@@ -31,7 +31,7 @@ export function AppHeader() {
         {me ? (
           <Avatar name={me.name} size={30} />
         ) : (
-          <span aria-hidden className="size-[30px] animate-pulse rounded-full bg-raised" />
+          <span aria-hidden className="size-[30px] animate-pulse rounded-full bg-border" />
         )}
         <Button variant="ghost" size="sm" loading={leaving} onClick={signOut}>
           Cerrar sesión
