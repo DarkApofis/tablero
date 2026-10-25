@@ -10,11 +10,13 @@
     "gen:api": "openapi-typescript ../docs/openapi.yaml -o lib/api-schema.d.ts"
   },
   "dependencies": {
+    "@hookform/resolvers": "^6.0.0",
     "@tanstack/react-query": "^5.104.5",
     "geist": "^1.8.2",
     "next": "16.4.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-hook-form": "^7.91.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

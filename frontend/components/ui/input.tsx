@@ -1,4 +1,4 @@
-import { useId, type InputHTMLAttributes } from "react";
+import { useId, type ComponentProps } from "react";
 import { cx } from "./cx";
 
 const sizes = {
@@ -6,7 +6,8 @@ const sizes = {
   lg: "h-[42px]",
 };
 
-type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "size"> & {
+// ComponentProps includes `ref`, so react-hook-form's register() can be spread in.
+type InputProps = Omit<ComponentProps<"input">, "size"> & {
   /** Visible label. Without one, pass `aria-label`. */
   label?: string;
   /** Field error; marks the input invalid and is read out with it. */

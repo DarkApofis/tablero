@@ -85,6 +85,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renovar la sesión
+         * @description Canjea la cookie `refresh_token` por una sesión nueva. El refresh token es de un
+         *     solo uso: queda revocado y la respuesta fija uno nuevo en la cookie (rotación).
+         *     Dos renovaciones simultáneas con el mismo token no pueden tener éxito ambas.
+         *
+         *     Si vuelve un token ya rotado hace más de 30 segundos, se asume robado y se
+         *     revocan **todas** las sesiones del usuario. Dentro de esos 30 segundos (una
+         *     respuesta perdida, dos pestañas renovando a la vez) solo responde 401.
+         */
+        post: operations["refreshSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cerrar sesión
+         * @description Revoca el refresh token de la cookie y borra las dos cookies de sesión. No exige
+         *     access token, para que una sesión caducada también pueda cerrarse. Sin cookie, o
+         *     con un token desconocido o ya revocado, responde igual.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me": {
         parameters: {
             query?: never;
@@ -1097,6 +1145,8 @@ export interface components {
          *     y `access_token=<jwt>; Path=/boards; HttpOnly; Secure; SameSite=Lax; Max-Age=<vida del access token>`.
          */
         RefreshCookie: string;
+        /** @description Borra `refresh_token` (`Path=/auth`) y `access_token` (`Path=/boards`) con `Max-Age=0`. */
+        ClearedCookies: string;
     };
     pathItems: never;
 }
@@ -1253,6 +1303,61 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Error"];
                 };
+            };
+            500: components["responses"]["InternalError"];
+        };
+    };
+    refreshSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sesión renovada. */
+            200: {
+                headers: {
+                    "Set-Cookie": components["headers"]["RefreshCookie"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            /**
+             * @description Falta la cookie o el token no existe, caducó o está revocado (`unauthorized`).
+             *     La respuesta borra las dos cookies de sesión.
+             */
+            401: {
+                headers: {
+                    "Set-Cookie": components["headers"]["ClearedCookies"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sesión cerrada. */
+            204: {
+                headers: {
+                    "Set-Cookie": components["headers"]["ClearedCookies"];
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             500: components["responses"]["InternalError"];
         };

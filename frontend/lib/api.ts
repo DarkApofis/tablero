@@ -1,18 +1,82 @@
 import { z } from "zod";
 import type { components, paths } from "./api-schema";
+import { clearSignedIn, markSignedIn } from "./session";
 
 export type Schemas = components["schemas"];
 export type Task = Schemas["Task"];
+export type User = Schemas["User"];
+export type Session = Schemas["Session"];
 export type ErrorCode = Schemas["ErrorCode"];
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
+/* ---------- Session ---------- */
+
 // The refresh token lives in an HttpOnly cookie (credentials: "include"), but every
 // route except the SSE stream requires the access token in the Authorization header.
+// It is kept in memory only: after a reload the first request gets a 401 and renews it.
 let accessToken: string | null = null;
 
-export function setAccessToken(token: string | null) {
-  accessToken = token;
+export function startSession(session: Session) {
+  accessToken = session.access_token;
+  markSignedIn();
+}
+
+export function clearSession() {
+  accessToken = null;
+  clearSignedIn();
+}
+
+const expiryListeners = new Set<() => void>();
+
+/** Runs `listener` when the session can no longer be renewed. Returns an unsubscribe. */
+export function onSessionExpired(listener: () => void) {
+  expiryListeners.add(listener);
+  return () => void expiryListeners.delete(listener);
+}
+
+let refreshing: Promise<boolean> | null = null;
+
+/**
+ * Renews the access token with the refresh cookie. Resolves false if the session is
+ * over (and notifies onSessionExpired); throws ApiError if the API could not answer,
+ * which leaves the session alone.
+ *
+ * Concurrent callers in this tab share one request. Across tabs, a Web Lock makes
+ * renewals take turns: each rotation replaces the cookie, so two tabs presenting the
+ * same refresh token at once would make the API reject the second one.
+ */
+export function refreshSession(): Promise<boolean> {
+  refreshing ??= withRefreshLock(renew).finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
+}
+
+async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof navigator === "undefined" || !navigator.locks) return fn();
+  return await navigator.locks.request("tablero:refresh", fn);
+}
+
+async function renew(): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(new URL("/auth/refresh", API_URL), {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      credentials: "include",
+    });
+  } catch {
+    throw networkError();
+  }
+  if (res.status === 401) {
+    clearSession();
+    for (const listener of expiryListeners) listener();
+    return false;
+  }
+  if (!res.ok) throw await toApiError(res);
+  startSession((await res.json()) as Session);
+  return true;
 }
 
 /* ---------- Types derived from the OpenAPI spec ---------- */
@@ -133,11 +197,16 @@ function buildUrl(template: string, opts: RawOptions): string {
   return url.toString();
 }
 
-async function request(method: Method, template: string, opts: RawOptions = {}): Promise<unknown> {
+function networkError() {
+  return new ApiError({ status: 0, code: "network_error", message: "No se pudo conectar con el servidor" });
+}
+
+async function request(method: Method, template: string, opts: RawOptions = {}, retried = false): Promise<unknown> {
   const headers = new Headers(opts.headers);
   headers.set("Accept", "application/json");
   if (opts.body !== undefined) headers.set("Content-Type", "application/json");
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  const tokenUsed = accessToken;
+  if (tokenUsed) headers.set("Authorization", `Bearer ${tokenUsed}`);
 
   let res: Response;
   try {
@@ -150,11 +219,15 @@ async function request(method: Method, template: string, opts: RawOptions = {}):
     });
   } catch (err) {
     if (opts.signal?.aborted) throw err;
-    throw new ApiError({
-      status: 0,
-      code: "network_error",
-      message: "No se pudo conectar con el servidor",
-    });
+    throw networkError();
+  }
+
+  // An expired access token: renew it once and retry. /auth/* answers 401 for bad
+  // credentials or a dead refresh token, which a renewal cannot fix.
+  if (res.status === 401 && !retried && !template.startsWith("/auth/")) {
+    // Another request may have renewed the token while this one was in flight.
+    const renewed = (accessToken !== null && accessToken !== tokenUsed) || (await refreshSession());
+    if (renewed) return request(method, template, opts, true);
   }
 
   if (!res.ok) throw await toApiError(res);
