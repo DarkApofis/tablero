@@ -37,6 +37,12 @@ Cómo está hecho (`GET /boards/{id}/events`):
 - **Reconexión:** el stream se suscribe **antes** de leer el log, y luego reenvía lo posterior a `Last-Event-ID` (o `?last_event_id=` para un `EventSource` nuevo) antes de pasar al vivo.
   - Si faltan más de 500 eventos, o el id es mayor que el último del board, envía `event: resync` con `id` = el último evento: el cliente recarga el board y sigue desde ahí.
   - Sin `Last-Event-ID`, el stream empieza en vivo.
+- **Presencia, derivada del stream y sin tabla:** el hub cuenta, por board y usuario, las conexiones abiertas. Varias pestañas son una presencia.
+  - `presence.joined` sale cuando se abre la primera conexión. `presence.left` sale cuando se cierra la última **y pasan 4 s** sin que vuelva. Si reconecta antes (una recarga de página), no se envía nada; durante esos segundos sigue contando como presente.
+  - Suscribirse y unirse a la presencia es un solo paso bajo el mutex del hub. Así el `presence.snapshot` de una conexión nueva cuadra con los eventos que llegan después, y esa conexión no recibe su propio `joined`.
+  - Los mensajes de presencia van **sin `id` SSE**: según el estándar, el navegador conserva entonces el último `Last-Event-ID`, así que no interfieren con el reenvío desde `activity_log`. Tampoco se reenvían, porque cada conexión recibe el estado completo en su snapshot.
+  - `GET /boards/{id}/presence` devuelve lo mismo sin abrir el stream.
+  - Límite: como el hub, la presencia vive en un proceso; con varias instancias haría falta compartirla.
 - **Excluir los propios eventos** solo si se pide: `?exclude_self=true` o `X-Exclude-Self: true`.
 - Antes de todo se envía `retry: 3000`.
 - **Autenticación por cookie:** `EventSource` no puede enviar cabeceras, así que login y registro también fijan el access token en la cookie `access_token` (`HttpOnly; SameSite=Lax; Path=/boards`). **Solo** el stream la acepta (también acepta Bearer). El resto de la API sigue exigiendo la cabecera `Authorization`, de modo que la cookie no permite CSRF sobre rutas que escriben, y el stream es de solo lectura y está protegido por CORS.

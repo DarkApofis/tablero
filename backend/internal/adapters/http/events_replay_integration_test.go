@@ -26,7 +26,7 @@ func (f *taskFixture) streamServerWithReplayLimit(limit int) *httptest.Server {
 	f.t.Helper()
 	deps := f.deps
 	deps.StreamHeartbeat = time.Minute
-	deps.Streams = board.NewStreamService(f.hub, postgres.NewActivity(f.pool), limit)
+	deps.Streams = board.NewStreamService(f.hub, postgres.NewActivity(f.pool), postgres.NewUsers(f.pool), limit)
 	srv := httptest.NewServer(NewRouter(deps))
 	f.t.Cleanup(srv.Close)
 	return srv

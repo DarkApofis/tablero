@@ -36,7 +36,9 @@ func (f *taskFixture) streamServer(heartbeat, writeTimeout time.Duration) *httpt
 type sseStream struct {
 	resp   *http.Response
 	frames chan string // each SSE message (the lines between blank lines)
-	cancel context.CancelFunc
+	// presence gets the presence messages, which next skips.
+	presence chan string
+	cancel   context.CancelFunc
 }
 
 // openStream connects as `as`, authenticating with the access_token cookie;
@@ -54,7 +56,7 @@ func (f *taskFixture) openStream(srv *httptest.Server, board uuid.UUID, as testU
 		cancel()
 		f.t.Fatal(err)
 	}
-	s := &sseStream{resp: resp, frames: make(chan string, 64), cancel: cancel}
+	s := &sseStream{resp: resp, frames: make(chan string, 64), presence: make(chan string, 64), cancel: cancel}
 	f.t.Cleanup(func() { cancel(); _ = resp.Body.Close() })
 	go func() {
 		defer close(s.frames)
@@ -65,8 +67,13 @@ func (f *taskFixture) openStream(srv *httptest.Server, board uuid.UUID, as testU
 				frame = append(frame, line)
 				continue
 			}
-			s.frames <- strings.Join(frame, "\n")
+			msg := strings.Join(frame, "\n")
 			frame = nil
+			if strings.HasPrefix(msg, "event: presence.") {
+				s.presence <- msg
+				continue
+			}
+			s.frames <- msg
 		}
 	}()
 	return s

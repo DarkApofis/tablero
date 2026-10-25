@@ -59,7 +59,7 @@ func run() error {
 	tx := postgres.NewTxManager(pool)
 	// The hub is both the use cases' EventPublisher and the source of the
 	// board event streams.
-	hub := events.NewHub(events.DefaultBuffer)
+	hub := events.NewHub(events.DefaultBuffer, events.DefaultLeaveDelay)
 	publisher := hub
 
 	users := postgres.NewUsers(pool)
@@ -86,7 +86,7 @@ func run() error {
 			Tasks:        task.NewService(postgres.NewTasks(pool), boards, workspaces, activity, tx, publisher, systemClock{}),
 			Labels:       board.NewLabelService(labels, activity, tx, publisher),
 			Activity:     board.NewActivityService(activity),
-			Streams:      board.NewStreamService(hub, activity, board.DefaultReplayLimit),
+			Streams:      board.NewStreamService(hub, activity, users, board.DefaultReplayLimit),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		// Caps ordinary responses; the event stream replaces it per write on its

@@ -76,6 +76,7 @@ func NewRouter(d Deps) http.Handler {
 		eh.writeTimeout = defaultStreamWriteTimeout
 	}
 	mux.Handle("GET /boards/{id}/events", requireStreamAuth(d.Auth, requireAccess(d.Authorizer, domain.ActionRead, bh.boardWorkspace, http.HandlerFunc(eh.stream))))
+	mux.Handle("GET /boards/{id}/presence", guarded(bh.boardWorkspace, domain.ActionRead, eh.presence))
 
 	lh := &labelHandler{labels: d.Labels}
 	mux.Handle("GET /boards/{id}/labels", guarded(bh.boardWorkspace, domain.ActionRead, lh.list))

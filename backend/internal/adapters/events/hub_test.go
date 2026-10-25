@@ -9,6 +9,15 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
+// tester is the one user of the tests that are not about presence: their
+// extra subscriptions are more tabs of the same user, so no presence events.
+var tester = domain.Presence{UserID: domain.NewID(), Name: "Tester"}
+
+func subscribe(h *Hub, board domain.ID) (<-chan domain.Event, func()) {
+	ch, _, cancel := h.Subscribe(board, tester)
+	return ch, cancel
+}
+
 func event(board domain.ID, id int64) domain.Event {
 	return domain.Event{Type: domain.ActivityTaskUpdated, BoardID: board, ID: id}
 }
@@ -41,13 +50,13 @@ func closed(ch <-chan domain.Event) bool {
 }
 
 func TestSubscribersGetTheirBoardsEvents(t *testing.T) {
-	h := NewHub(8)
+	h := NewHub(8, time.Hour)
 	boardA, boardB := domain.NewID(), domain.NewID()
-	a1, cancelA1 := h.Subscribe(boardA)
+	a1, cancelA1 := subscribe(h, boardA)
 	defer cancelA1()
-	a2, cancelA2 := h.Subscribe(boardA)
+	a2, cancelA2 := subscribe(h, boardA)
 	defer cancelA2()
-	b, cancelB := h.Subscribe(boardB)
+	b, cancelB := subscribe(h, boardB)
 	defer cancelB()
 
 	h.Publish(context.Background(), event(boardA, 1), event(boardB, 2), event(boardA, 3))
@@ -68,18 +77,18 @@ func TestSubscribersGetTheirBoardsEvents(t *testing.T) {
 }
 
 func TestPublishWithoutSubscribersIsANoop(t *testing.T) {
-	h := NewHub(1)
+	h := NewHub(1, time.Hour)
 	h.Publish(context.Background(), event(domain.NewID(), 1))
 }
 
 // A subscriber that stops reading is dropped once its buffer is full; the
 // publisher is not blocked and the others keep receiving.
 func TestSlowSubscriberIsDroppedWithoutBlocking(t *testing.T) {
-	h := NewHub(2)
+	h := NewHub(2, time.Hour)
 	board := domain.NewID()
-	slow, cancelSlow := h.Subscribe(board)
+	slow, cancelSlow := subscribe(h, board)
 	defer cancelSlow()
-	fast, cancelFast := h.Subscribe(board)
+	fast, cancelFast := subscribe(h, board)
 	defer cancelFast()
 
 	// fast reads each event right after it is published (in the same
@@ -122,9 +131,9 @@ func TestSlowSubscriberIsDroppedWithoutBlocking(t *testing.T) {
 }
 
 func TestCancelUnsubscribesAndCleansUp(t *testing.T) {
-	h := NewHub(4)
+	h := NewHub(4, time.Hour)
 	board := domain.NewID()
-	ch, cancel := h.Subscribe(board)
+	ch, cancel := subscribe(h, board)
 	if h.Subscribers(board) != 1 {
 		t.Fatal("not subscribed")
 	}
@@ -144,17 +153,17 @@ func TestCancelUnsubscribesAndCleansUp(t *testing.T) {
 }
 
 func TestCloseEndsEverySubscription(t *testing.T) {
-	h := NewHub(4)
-	a, cancelA := h.Subscribe(domain.NewID())
+	h := NewHub(4, time.Hour)
+	a, cancelA := subscribe(h, domain.NewID())
 	defer cancelA()
-	b, cancelB := h.Subscribe(domain.NewID())
+	b, cancelB := subscribe(h, domain.NewID())
 	defer cancelB()
 
 	h.Close()
 	if !closed(a) || !closed(b) {
 		t.Error("Close left subscriptions open")
 	}
-	late, cancelLate := h.Subscribe(domain.NewID())
+	late, cancelLate := subscribe(h, domain.NewID())
 	defer cancelLate()
 	if !closed(late) {
 		t.Error("a subscription after Close stayed open")
@@ -164,12 +173,12 @@ func TestCloseEndsEverySubscription(t *testing.T) {
 // Publishing, subscribing and cancelling from many goroutines at once must
 // not deadlock, panic (send on closed channel) or leak subscribers.
 func TestConcurrentUse(t *testing.T) {
-	h := NewHub(4)
+	h := NewHub(4, time.Hour)
 	board := domain.NewID()
 	var wg sync.WaitGroup
 	for i := range 50 {
 		wg.Go(func() {
-			ch, cancel := h.Subscribe(board)
+			ch, cancel := subscribe(h, board)
 			defer cancel()
 			for range i % 5 {
 				select {

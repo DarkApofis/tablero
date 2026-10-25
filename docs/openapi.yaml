@@ -449,6 +449,14 @@ paths:
         Con `?exclude_self=true` (o la cabecera `X-Exclude-Self: true`) no envía los eventos
         del propio usuario.
 
+        **Presencia.** Justo después de `retry` envía `presence.snapshot` con los usuarios
+        conectados al board (él incluido), y luego `presence.joined` / `presence.left`
+        cuando alguien entra o sale. Varias pestañas de un usuario cuentan una vez.
+        `presence.left` se envía 4 s después de cerrarse su última conexión, y no se envía
+        si vuelve antes (una recarga). Los mensajes de presencia **no llevan `id`**, así que
+        no mueven el `Last-Event-ID` del cliente ni se reenvían al reconectar: el
+        `presence.snapshot` de cada conexión es el estado completo.
+
         Cada 25 s envía el comentario `: ping` y vuelve a comprobar el acceso: si el usuario
         ya no es miembro, cierra el stream. También termina si el cliente se desconecta, si
         se queda tan atrás que llena su buffer (al reconectar recibe lo que le falta) o al
@@ -480,7 +488,9 @@ paths:
                 type: string
                 description: |
                   Mensajes SSE. El `data` de cada evento sigue `x-sse-data`; el de `resync` es
-                  `{"last_event_id": <id>}`.
+                  `{"last_event_id": <id>}`; el de `presence.snapshot` es
+                  `{"type", "board_id", "users": [{"id", "name"}]}` y el de `presence.joined` /
+                  `presence.left`, `{"type", "board_id", "user": {"id", "name"}}`.
                 x-sse-data:
                   type: object
                   required: [id, type, board_id, actor_id, version, payload, created_at]
@@ -506,12 +516,46 @@ paths:
 
                 : ping
 
+                event: presence.joined
+                data: {"type":"presence.joined","board_id":"…","user":{"id":"…","name":"Ana"}}
+
                 id: 57
                 event: resync
                 data: {"last_event_id":57}
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /boards/{id}/presence:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [events]
+      summary: Usuarios conectados al stream del board
+      operationId: getBoardPresence
+      description: |
+        Permiso: leer. Lo mismo que el `presence.snapshot` del stream, para leerlo sin abrirlo.
+        Se deriva de las conexiones abiertas en este servidor, sin guardarse en ninguna parte.
+        Un usuario sigue presente hasta 4 s después de cerrar su última conexión.
+      responses:
+        "200":
+          description: Usuarios presentes, por nombre.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name]
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /boards/{id}/labels:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:

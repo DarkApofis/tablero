@@ -7,12 +7,22 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
-// EventSubscriber delivers the events published for a board as they happen.
+// EventSubscriber delivers the events published for a board as they happen,
+// and keeps track of who is connected.
 type EventSubscriber interface {
-	// Subscribe returns a channel of boardID's events. The channel is closed
-	// if the subscriber falls too far behind or the subscriber shuts down;
-	// cancel must always be called and is idempotent.
-	Subscribe(boardID domain.ID) (events <-chan domain.Event, cancel func())
+	// Subscribe returns a channel of boardID's events and marks who as
+	// present on the board until cancel; snapshot is who is present right
+	// then (who included). The channel is closed if the subscriber falls too
+	// far behind or the subscriber shuts down; cancel must always be called
+	// and is idempotent.
+	Subscribe(boardID domain.ID, who domain.Presence) (events <-chan domain.Event, snapshot []domain.Presence, cancel func())
+	// Present returns who is present on boardID.
+	Present(boardID domain.ID) []domain.Presence
+}
+
+// UserDirectory gives the name presence shows for a user.
+type UserDirectory interface {
+	ByID(ctx context.Context, id domain.ID) (domain.User, error)
 }
 
 // ActivityFeed reads a board's log in the order its entries became visible.
@@ -38,14 +48,23 @@ const DefaultReplayLimit = 500
 type StreamService struct {
 	events      EventSubscriber
 	feed        ActivityFeed
+	users       UserDirectory
 	replayLimit int
 }
 
-func NewStreamService(events EventSubscriber, feed ActivityFeed, replayLimit int) *StreamService {
+func NewStreamService(events EventSubscriber, feed ActivityFeed, users UserDirectory, replayLimit int) *StreamService {
 	if replayLimit < 1 {
 		replayLimit = DefaultReplayLimit
 	}
-	return &StreamService{events: events, feed: feed, replayLimit: replayLimit}
+	return &StreamService{events: events, feed: feed, users: users, replayLimit: replayLimit}
+}
+
+// Presence returns who is connected to boardID's event stream, by name.
+func (s *StreamService) Presence(_ context.Context, acc domain.Access, boardID domain.ID) ([]domain.Presence, error) {
+	if err := acc.Require(domain.ActionRead); err != nil {
+		return nil, err
+	}
+	return s.events.Present(boardID), nil
 }
 
 type StreamOptions struct {
@@ -72,25 +91,31 @@ type Stream struct {
 	exclude bool
 	wake    <-chan domain.Event
 	cancel  func()
+	present []domain.Presence // who was connected when the stream opened
 
 	cursor int64 // id of the last entry handled (sent or excluded)
 	resync bool  // the next Pull must start with a resync
 }
 
-// Open starts a stream; any role that can read the board may. It
-// subscribes before reading the log, so nothing committed from then on can
-// fall between the replay and the live events. Close it when done.
+// Open starts a stream; any role that can read the board may. The caller
+// counts as present on the board until Close. It subscribes before reading
+// the log, so nothing committed from then on can fall between the replay
+// and the live events. Close it when done.
 func (s *StreamService) Open(ctx context.Context, acc domain.Access, boardID domain.ID, opts StreamOptions) (*Stream, error) {
 	if err := acc.Require(domain.ActionRead); err != nil {
 		return nil, err
 	}
-	wake, cancel := s.events.Subscribe(boardID)
+	user, err := s.users.ByID(ctx, acc.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	wake, present, cancel := s.events.Subscribe(boardID, domain.Presence{UserID: user.ID, Name: user.Name})
 	latest, err := s.feed.LatestActivityID(ctx, boardID)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("latest activity: %w", err)
 	}
-	st := &Stream{svc: s, acc: acc, boardID: boardID, exclude: opts.ExcludeSelf, wake: wake, cancel: cancel, cursor: latest}
+	st := &Stream{svc: s, acc: acc, boardID: boardID, exclude: opts.ExcludeSelf, wake: wake, cancel: cancel, present: present, cursor: latest}
 	if id := opts.LastEventID; id != nil {
 		st.cursor = *id
 		// An id past the newest entry did not come from this board's log
@@ -100,10 +125,16 @@ func (s *StreamService) Open(ctx context.Context, acc domain.Access, boardID dom
 	return st, nil
 }
 
-// Wake signals that there may be new events; Pull them. It is closed when
-// the subscription ends (the client was too slow, or shutdown): close the
-// stream then, the client will reconnect and catch up.
+// Wake delivers live events. Presence events are complete as they come
+// (send them as they are); any other event only signals that there may be
+// new entries in the log: Pull them. It is closed when the subscription ends
+// (the client was too slow, or shutdown): close the stream then, the client
+// will reconnect and catch up.
 func (st *Stream) Wake() <-chan domain.Event { return st.wake }
+
+// Present is who was connected to the board when the stream opened, the
+// caller included: the presence.snapshot to send first.
+func (st *Stream) Present() []domain.Presence { return st.present }
 
 func (st *Stream) Close() { st.cancel() }
 

@@ -12,11 +12,22 @@ import (
 type fakeSubscriber struct {
 	subscribed int
 	cancelled  int
+	who        []domain.Presence
 }
 
-func (f *fakeSubscriber) Subscribe(domain.ID) (<-chan domain.Event, func()) {
+func (f *fakeSubscriber) Subscribe(_ domain.ID, who domain.Presence) (<-chan domain.Event, []domain.Presence, func()) {
 	f.subscribed++
-	return make(chan domain.Event), func() { f.cancelled++ }
+	f.who = append(f.who, who)
+	return make(chan domain.Event), f.who, func() { f.cancelled++ }
+}
+
+func (f *fakeSubscriber) Present(domain.ID) []domain.Presence { return f.who }
+
+// directory knows every user: their name is "user-" + the start of their id.
+type directory struct{}
+
+func (directory) ByID(_ context.Context, id domain.ID) (domain.User, error) {
+	return domain.User{ID: id, Name: "user-" + id.String()[:4]}, nil
 }
 
 // memFeed is a board log with entries 1..n (ids may skip, like the real
@@ -79,7 +90,7 @@ func equal(a, b []int64) bool {
 
 func TestOpenRequiresReadAndSubscribesFirst(t *testing.T) {
 	subs, feed := &fakeSubscriber{}, &memFeed{}
-	svc := board.NewStreamService(subs, feed, 10)
+	svc := board.NewStreamService(subs, feed, directory{}, 10)
 	ctx := context.Background()
 	if _, err := svc.Open(ctx, domain.Access{}, domain.NewID(), board.StreamOptions{}); !errors.Is(err, domain.ErrForbidden) {
 		t.Errorf("no role: err = %v", err)
@@ -102,7 +113,7 @@ func TestFreshStreamStartsFromNow(t *testing.T) {
 	actor := domain.NewID()
 	feed.add(1, actor)
 	feed.add(4, actor)
-	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{})
+	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, directory{}, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{})
 
 	if got := pull(t, st); len(got) != 0 {
 		t.Errorf("fresh stream replayed %v", got)
@@ -125,7 +136,7 @@ func TestReconnectReplaysWhatWasMissed(t *testing.T) {
 		feed.add(id, actor)
 	}
 	last := int64(5)
-	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, directory{}, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{LastEventID: &last})
 
 	if got := pull(t, st); !equal(got, []int64{8, 13}) {
 		t.Errorf("replay = %v, want [8 13]", got)
@@ -142,7 +153,7 @@ func TestTooLargeAGapAsksForAResync(t *testing.T) {
 	for id := int64(1); id <= 8; id++ {
 		feed.add(id, actor)
 	}
-	svc := board.NewStreamService(&fakeSubscriber{}, feed, 5)
+	svc := board.NewStreamService(&fakeSubscriber{}, feed, directory{}, 5)
 	viewer := domain.Access{Role: domain.RoleViewer}
 	ctx := context.Background()
 
@@ -178,7 +189,7 @@ func TestExcludeSelfSkipsOnlyTheCallersEvents(t *testing.T) {
 	feed.add(2, other)
 	feed.add(3, me)
 	last := int64(0)
-	svc := board.NewStreamService(&fakeSubscriber{}, feed, 10)
+	svc := board.NewStreamService(&fakeSubscriber{}, feed, directory{}, 10)
 	ctx := context.Background()
 	acc := domain.Access{UserID: me, Role: domain.RoleMember}
 
@@ -201,9 +212,30 @@ func TestEventsCarryTheTaskVersion(t *testing.T) {
 	feed := &memFeed{}
 	feed.add(1, domain.NewID())
 	last := int64(0)
-	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, directory{}, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{LastEventID: &last})
 	msgs, _ := st.Pull(context.Background())
 	if len(msgs) != 1 || msgs[0].Event.Type != domain.EventTaskMoved || msgs[0].Event.TaskVersion == nil || *msgs[0].Event.TaskVersion != 3 {
 		t.Errorf("event = %+v", msgs)
+	}
+}
+
+func TestOpenMarksTheCallerPresentByName(t *testing.T) {
+	subs := &fakeSubscriber{}
+	svc := board.NewStreamService(subs, &memFeed{}, directory{}, 10)
+	me := domain.NewID()
+	st, err := svc.Open(context.Background(), domain.Access{UserID: me, Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := domain.Presence{UserID: me, Name: "user-" + me.String()[:4]}
+	if len(subs.who) != 1 || subs.who[0] != want || len(st.Present()) != 1 || st.Present()[0] != want {
+		t.Errorf("subscribed as %+v, snapshot %+v; want %+v", subs.who, st.Present(), want)
+	}
+
+	if p, err := svc.Presence(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID()); err != nil || len(p) != 1 {
+		t.Errorf("Presence = %v, %v", p, err)
+	}
+	if _, err := svc.Presence(context.Background(), domain.Access{}, domain.NewID()); !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("Presence without a role: %v", err)
 	}
 }

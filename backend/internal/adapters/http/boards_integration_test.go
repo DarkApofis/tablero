@@ -51,7 +51,8 @@ func newDBEnv(t *testing.T) *dbEnv {
 
 	tokens := token.NewIssuer(testSecret, 15*time.Minute)
 	txm := postgres.NewTxManager(pool)
-	hub := events.NewHub(events.DefaultBuffer)
+	// A short leave delay keeps the presence tests fast.
+	hub := events.NewHub(events.DefaultBuffer, testLeaveDelay)
 	t.Cleanup(hub.Close)
 	activity := postgres.NewActivity(pool)
 	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), activity, txm, hub)
@@ -66,7 +67,7 @@ func newDBEnv(t *testing.T) *dbEnv {
 		Tasks:      tasks,
 		Labels:     board.NewLabelService(postgres.NewLabels(pool), activity, txm, hub),
 		Activity:   board.NewActivityService(activity),
-		Streams:    board.NewStreamService(hub, activity, board.DefaultReplayLimit),
+		Streams:    board.NewStreamService(hub, activity, postgres.NewUsers(pool), board.DefaultReplayLimit),
 	}
 	return &dbEnv{
 		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks, hub: hub,

@@ -40,6 +40,29 @@ type streamEvent struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+// presenceUser is how presence shows a user, in the stream and in GET /presence.
+type presenceUser struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+func newPresenceUsers(ps []domain.Presence) []presenceUser {
+	out := make([]presenceUser, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, presenceUser{ID: uuid.UUID(p.UserID), Name: p.Name})
+	}
+	return out
+}
+
+// presenceMessage is the data of presence.snapshot (Users) and of
+// presence.joined / presence.left (User).
+type presenceMessage struct {
+	Type    domain.EventType `json:"type"`
+	BoardID uuid.UUID        `json:"board_id"`
+	User    *presenceUser    `json:"user,omitempty"`
+	Users   []presenceUser   `json:"users,omitempty"`
+}
+
 type eventsHandler struct {
 	streams      *board.StreamService
 	authz        *workspace.Authorizer
@@ -52,6 +75,11 @@ type eventsHandler struct {
 // opening a new EventSource) it first replays what the client missed, or
 // sends a resync if that is too much. ?exclude_self=true (or the
 // X-Exclude-Self: true header) leaves out the caller's own changes.
+//
+// Right after connecting it sends presence.snapshot, who is connected (the
+// caller included), and then presence.joined / presence.left as people come
+// and go. Presence messages carry no SSE id, so they never move the
+// client's Last-Event-ID.
 //
 // Every heartbeat it sends ": ping" and re-checks that the user can still
 // read the board. It returns when the client disconnects, when the hub drops
@@ -110,6 +138,19 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	if err := write("retry: %d\n\n", streamRetryMillis); err != nil {
 		return
 	}
+	// sendPresence writes a presence message, without an id.
+	sendPresence := func(m presenceMessage) error {
+		data, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		return write("event: %s\ndata: %s\n\n", m.Type, data)
+	}
+	boardID := uuid.UUID(pathID(r))
+	snapshot := presenceMessage{Type: domain.EventPresenceSnapshot, BoardID: boardID, Users: newPresenceUsers(st.Present())}
+	if err := sendPresence(snapshot); err != nil {
+		return
+	}
 	if err := send(); err != nil { // the replay, if reconnecting
 		return
 	}
@@ -121,12 +162,32 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return // client went away
 
-		case _, ok := <-st.Wake():
+		case ev, ok := <-st.Wake():
 			if !ok {
 				return // dropped as too slow, or shutting down
 			}
-			drain(st.Wake()) // one read of the log covers every pending wake-up
-			if err := send(); err != nil {
+			pending, closed := drain(st.Wake())
+			pullLog := false
+			for _, ev := range append([]domain.Event{ev}, pending...) {
+				if !ev.Type.IsPresence() {
+					pullLog = true // one read of the log covers every change
+					continue
+				}
+				var p domain.PresencePayload
+				if err := json.Unmarshal(ev.Payload, &p); err != nil {
+					continue
+				}
+				u := presenceUser{ID: uuid.UUID(p.User.ID), Name: p.User.Name}
+				if err := sendPresence(presenceMessage{Type: ev.Type, BoardID: boardID, User: &u}); err != nil {
+					return
+				}
+			}
+			if pullLog {
+				if err := send(); err != nil {
+					return
+				}
+			}
+			if closed {
 				return
 			}
 
@@ -141,17 +202,31 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func drain(ch <-chan domain.Event) {
+// drain takes whatever is already waiting in ch, and reports whether ch
+// was closed.
+func drain(ch <-chan domain.Event) (events []domain.Event, closed bool) {
 	for {
 		select {
-		case _, ok := <-ch:
+		case ev, ok := <-ch:
 			if !ok {
-				return
+				return events, true
 			}
+			events = append(events, ev)
 		default:
-			return
+			return events, false
 		}
 	}
+}
+
+// presence: GET /boards/{id}/presence, who is connected to the board's event
+// stream (a user whose last connection closed a moment ago still counts).
+func (h *eventsHandler) presence(w http.ResponseWriter, r *http.Request) {
+	ps, err := h.streams.Presence(r.Context(), access(r), pathID(r))
+	if err != nil {
+		writeBoardError(w, r, "board presence", err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"users": newPresenceUsers(ps)})
 }
 
 // lastEventID reads Last-Event-ID (sent by EventSource when it reconnects)
