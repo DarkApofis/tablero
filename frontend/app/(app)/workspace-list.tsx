@@ -80,7 +80,7 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
 
   return (
     <Link
-      href={`/workspaces/${workspace.id}/members`}
+      href={`/workspaces/${workspace.id}`}
       className="flex h-full flex-col gap-4 rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
     >
       <div className="flex items-start justify-between gap-2">
