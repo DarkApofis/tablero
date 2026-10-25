@@ -13,6 +13,7 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/hasher"
 	httpapi "github.com/DarkApofis/tablero/backend/internal/adapters/http"
+	"github.com/DarkApofis/tablero/backend/internal/adapters/metrics"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/token"
 	"github.com/DarkApofis/tablero/backend/internal/app/auth"
@@ -20,7 +21,6 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
-	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 // main.go is the composition root: it builds the adapters, hands them to the
@@ -62,15 +62,23 @@ func run() error {
 	// also the use cases' EventPublisher; with several, the Postgres bus is:
 	// it hands events to the hub and NOTIFYs the other instances.
 	hub := events.NewHub(events.DefaultBuffer, events.DefaultLeaveDelay)
-	var publisher interface {
-		Publish(ctx context.Context, events ...domain.Event)
-	} = hub
+	var publisher events.Publisher = hub
 	if cfg.EventsBackend == config.EventsPostgres {
 		bus := postgres.NewEventBus(pool, cfg.DatabaseURL, hub, postgres.EventBusOptions{})
 		publisher = bus
 		go func() { _ = bus.Run(ctx) }() // ends with ctx, on shutdown
 		slog.Info("events over postgres LISTEN/NOTIFY", "instance", bus.Instance())
 	}
+
+	// GET /metrics. The router adds the stream's delivery histogram.
+	reg := metrics.NewRegistry()
+	metrics.RegisterRuntime(reg)
+	reg.GaugeFunc("tablero_sse_connections", "Open SSE event streams on this instance.",
+		func() float64 { return float64(hub.Connections()) })
+	reg.CounterFunc("tablero_sse_slow_clients_dropped_total", "SSE clients dropped for falling behind (full buffer).",
+		func() float64 { return float64(hub.Dropped()) })
+	publisher = events.Counting{Next: publisher, Published: reg.CounterVec("tablero_events_published_total",
+		"Board events published by this instance after their commit, by type.", "type")}
 
 	users := postgres.NewUsers(pool)
 	workspaces := postgres.NewWorkspaces(pool)
@@ -97,6 +105,7 @@ func run() error {
 			Labels:       board.NewLabelService(labels, activity, tx, publisher),
 			Activity:     board.NewActivityService(activity),
 			Streams:      board.NewStreamService(hub, activity, users, board.DefaultReplayLimit),
+			Metrics:      reg,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		// Caps ordinary responses; the event stream replaces it per write on its

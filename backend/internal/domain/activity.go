@@ -210,6 +210,9 @@ type Event struct {
 	TaskVersion *int32
 	Payload     json.RawMessage
 	OccurredAt  time.Time
+	// PublishedAt is when this process published it, for measuring how long
+	// delivery takes; zero for events read back from the log.
+	PublishedAt time.Time
 }
 
 // Event returns the domain event the entry records.

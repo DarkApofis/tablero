@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DarkApofis/tablero/backend/internal/domain"
@@ -48,6 +49,9 @@ type Hub struct {
 	remote   map[domain.ID]map[string]*remoteSet  // board -> instance -> users
 	observer PresenceObserver
 	closed   bool
+
+	conns   int           // subscribers over every board
+	dropped atomic.Uint64 // subscribers dropped as too slow
 }
 
 type subscriber struct {
@@ -105,6 +109,7 @@ func (h *Hub) Subscribe(boardID domain.ID, who domain.Presence) (events <-chan d
 		h.boards[boardID] = subs
 	}
 	subs[s] = struct{}{}
+	h.conns++
 
 	var once sync.Once
 	return s.ch, h.presentLocked(boardID), func() {
@@ -118,11 +123,16 @@ func (h *Hub) Subscribe(boardID domain.ID, who domain.Presence) (events <-chan d
 }
 
 // Publish delivers each event to the subscribers of its board without
-// blocking; subscribers with a full buffer are dropped.
+// blocking; subscribers with a full buffer are dropped. Events without a
+// PublishedAt get the current time, from which delivery time is measured.
 func (h *Hub) Publish(_ context.Context, events ...domain.Event) {
+	now := time.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, ev := range events {
+		if ev.PublishedAt.IsZero() {
+			ev.PublishedAt = now
+		}
 		h.publishLocked(ev)
 	}
 }
@@ -141,6 +151,18 @@ func (h *Hub) Subscribers(boardID domain.ID) int {
 	defer h.mu.Unlock()
 	return len(h.boards[boardID])
 }
+
+// Connections returns how many subscribers there are over every board:
+// one per open event stream.
+func (h *Hub) Connections() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.conns
+}
+
+// Dropped returns how many subscribers have been dropped for falling
+// behind, since the hub was created.
+func (h *Hub) Dropped() uint64 { return h.dropped.Load() }
 
 // Close closes every subscription and refuses new ones; it lets open
 // streams end when the server shuts down. No presence.left is sent.
@@ -171,6 +193,7 @@ func (h *Hub) publishLocked(ev domain.Event) {
 		select {
 		case s.ch <- ev:
 		default:
+			h.dropped.Add(1)
 			h.remove(ev.BoardID, s)
 		}
 	}
@@ -257,6 +280,7 @@ func (h *Hub) remove(boardID domain.ID, s *subscriber) {
 		return
 	}
 	delete(subs, s)
+	h.conns--
 	if len(subs) == 0 {
 		delete(h.boards, boardID)
 	}

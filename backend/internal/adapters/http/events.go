@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/metrics"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
@@ -68,6 +69,9 @@ type eventsHandler struct {
 	authz        *workspace.Authorizer
 	heartbeat    time.Duration
 	writeTimeout time.Duration
+	// delivery observes, for each live event, the time from its publication
+	// to the flush of its message.
+	delivery *metrics.Histogram
 }
 
 // stream: GET /boards/{id}/events, a text/event-stream of the board's
@@ -107,8 +111,10 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		return rc.Flush()
 	}
-	// send writes what is new in the log since the last message sent.
-	send := func() error {
+	// send writes what is new in the log since the last message sent;
+	// published has the publication time of the live events that woke the
+	// stream, to measure their delivery (nil: none).
+	send := func(published map[int64]time.Time) error {
 		msgs, err := st.Pull(ctx)
 		if err != nil {
 			return err
@@ -125,6 +131,9 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				return err
+			}
+			if t, ok := published[m.ID]; ok && !m.Resync {
+				h.delivery.ObserveSince(t)
 			}
 		}
 		return nil
@@ -151,7 +160,7 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	if err := sendPresence(snapshot); err != nil {
 		return
 	}
-	if err := send(); err != nil { // the replay, if reconnecting
+	if err := send(nil); err != nil { // the replay, if reconnecting
 		return
 	}
 
@@ -167,10 +176,17 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 				return // dropped as too slow, or shutting down
 			}
 			pending, closed := drain(st.Wake())
+			var published map[int64]time.Time
 			pullLog := false
 			for _, ev := range append([]domain.Event{ev}, pending...) {
 				if !ev.Type.IsPresence() {
 					pullLog = true // one read of the log covers every change
+					if ev.ID != 0 && !ev.PublishedAt.IsZero() {
+						if published == nil {
+							published = map[int64]time.Time{}
+						}
+						published[ev.ID] = ev.PublishedAt
+					}
 					continue
 				}
 				var p domain.PresencePayload
@@ -183,7 +199,7 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if pullLog {
-				if err := send(); err != nil {
+				if err := send(published); err != nil {
 					return
 				}
 			}
@@ -197,7 +213,7 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 			}
 			// Re-read the log too: if a wake-up was lost (a notification
 			// between instances), the delay is one heartbeat at most.
-			if err := send(); err != nil {
+			if err := send(nil); err != nil {
 				return
 			}
 			if err := write(": ping\n\n"); err != nil {

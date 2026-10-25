@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/metrics"
 	appauth "github.com/DarkApofis/tablero/backend/internal/app/auth"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
 	"github.com/DarkApofis/tablero/backend/internal/app/task"
@@ -27,14 +28,21 @@ type Deps struct {
 	// (default 25s); StreamWriteTimeout bounds each of its writes (default 10s).
 	StreamHeartbeat    time.Duration
 	StreamWriteTimeout time.Duration
+	// Metrics is served on GET /metrics; the router adds the stream's
+	// delivery histogram to it. Nil: a registry of its own.
+	Metrics *metrics.Registry
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
 // request id → logging → recover → CORS → mux.
 func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
+	if d.Metrics == nil {
+		d.Metrics = metrics.NewRegistry()
+	}
 
 	mux.HandleFunc("GET /health", handleHealth(d.Health))
+	mux.Handle("GET /metrics", d.Metrics.Handler())
 
 	ah := &authHandler{auth: d.Auth, cookieSecure: d.CookieSecure}
 	mux.HandleFunc("POST /auth/register", ah.register)
@@ -68,7 +76,12 @@ func NewRouter(d Deps) http.Handler {
 	ach := &activityHandler{activity: d.Activity}
 	mux.Handle("GET /boards/{id}/activity", guarded(bh.boardWorkspace, domain.ActionRead, ach.list))
 
-	eh := &eventsHandler{streams: d.Streams, authz: d.Authorizer, heartbeat: d.StreamHeartbeat, writeTimeout: d.StreamWriteTimeout}
+	eh := &eventsHandler{
+		streams: d.Streams, authz: d.Authorizer, heartbeat: d.StreamHeartbeat, writeTimeout: d.StreamWriteTimeout,
+		delivery: d.Metrics.Histogram("tablero_sse_delivery_seconds",
+			"Time from publishing a board event to flushing it to an SSE client (live events only, not replays).",
+			metrics.DeliveryBuckets),
+	}
 	if eh.heartbeat <= 0 {
 		eh.heartbeat = defaultHeartbeat
 	}

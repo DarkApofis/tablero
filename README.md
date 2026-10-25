@@ -15,7 +15,7 @@ con concurrencia optimista y orden por posición fraccionaria.
   - `internal/config` — configuración desde variables de entorno.
   - `migrations/`, `queries/` — SQL de goose y de sqlc.
 - `frontend/` — Next.js (App Router, TypeScript, Tailwind) con pnpm.
-- `docs/` — [API (OpenAPI)](docs/openapi.yaml) y [decisiones de arquitectura](docs/DECISIONS.md).
+- `docs/` — [API (OpenAPI)](docs/openapi.yaml), [catálogo de eventos en tiempo real](docs/EVENTS.md) y [decisiones de arquitectura](docs/DECISIONS.md).
 
 ## Requisitos
 
@@ -137,6 +137,16 @@ Tiempo real: `GET /boards/{id}/events` emite por SSE los cambios del tablero
 
 ```sh
 curl -N -H "Authorization: Bearer $TOKEN" http://localhost:8080/boards/$BOARD/events
+```
+
+Los mensajes están en [`docs/EVENTS.md`](docs/EVENTS.md). `GET /metrics` expone en
+formato Prometheus las conexiones SSE, los eventos publicados, los clientes expulsados
+por lentos y el tiempo de entrega. La prueba de carga (500 clientes sobre un board
+mientras se mueven tareas; resultados en la [decisión 9](docs/DECISIONS.md)) se corre
+con la API levantada:
+
+```sh
+cd backend && go run ./cmd/loadtest -url http://localhost:8080 -clients 500 -duration 30s -rate 10
 ```
 
 Pendiente: refresco y cierre de sesión (`/auth/refresh`, `/auth/logout`), invitar

@@ -194,3 +194,49 @@ func TestConcurrentUse(t *testing.T) {
 		t.Errorf("subscribers left = %d", n)
 	}
 }
+
+func TestConnectionsAndDropsAreCounted(t *testing.T) {
+	h := NewHub(1, time.Hour)
+	board := domain.NewID()
+	slow, cancelSlow := subscribe(h, board)
+	defer cancelSlow()
+	_, cancelOther := subscribe(h, board)
+	if got := h.Connections(); got != 2 {
+		t.Fatalf("Connections = %d, want 2", got)
+	}
+	cancelOther()
+	cancelOther() // idempotent: counted once
+	if got := h.Connections(); got != 1 {
+		t.Fatalf("Connections after cancel = %d, want 1", got)
+	}
+
+	h.Publish(context.Background(), event(board, 1), event(board, 2)) // the second does not fit
+	if !closed(drainOne(slow)) {
+		t.Fatal("slow subscriber not dropped")
+	}
+	if got, conns := h.Dropped(), h.Connections(); got != 1 || conns != 0 {
+		t.Fatalf("Dropped = %d, Connections = %d; want 1, 0", got, conns)
+	}
+}
+
+func TestPublishStampsPublishedAt(t *testing.T) {
+	h := NewHub(4, time.Hour)
+	board := domain.NewID()
+	ch, cancel := subscribe(h, board)
+	defer cancel()
+	before := time.Now()
+	given := before.Add(-time.Minute)
+	h.Publish(context.Background(), event(board, 1), domain.Event{Type: domain.ActivityTaskUpdated, BoardID: board, ID: 2, PublishedAt: given})
+	if ev := <-ch; ev.PublishedAt.Before(before) {
+		t.Errorf("PublishedAt = %v, want now", ev.PublishedAt)
+	}
+	if ev := <-ch; !ev.PublishedAt.Equal(given) {
+		t.Errorf("PublishedAt = %v, want the given %v", ev.PublishedAt, given)
+	}
+}
+
+// drainOne reads the one buffered event and returns ch.
+func drainOne(ch <-chan domain.Event) <-chan domain.Event {
+	<-ch
+	return ch
+}

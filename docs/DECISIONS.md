@@ -50,7 +50,7 @@ Cómo está hecho (`GET /boards/{id}/events`):
 - **Timeouts:** el servidor tiene `WriteTimeout` de 30 s para las respuestas normales. El stream lo reemplaza en su propia conexión con `http.ResponseController`: antes de cada escritura fija un plazo de 10 s y después hace `Flush`. El stream puede durar indefinidamente, pero una conexión muerta se detecta en la siguiente escritura. Un test lo comprueba con un `WriteTimeout` de 150 ms: sin el `ResponseController`, el stream se corta.
 - **Fin limpio:** el stream termina cuando se cancela el contexto (el cliente se desconecta), cuando el hub cierra el canal o al apagar el servidor (`RegisterOnShutdown(hub.Close)`), y siempre cancela su suscripción.
 - **Varias instancias:** con `EVENTS_BACKEND=postgres` los eventos y la presencia se comparten por `LISTEN/NOTIFY` (decisión 8).
-- **Límites conocidos:** Los ids no son consecutivos por board (la secuencia es de toda la tabla); solo crecen. El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. Cuando exista `/auth/refresh`, el cliente renovará la cookie antes de reconectar.
+- **Límites conocidos** (todos, con las cifras de la prueba de carga, en la decisión 9): los ids no son consecutivos por board (la secuencia es de toda la tabla); solo crecen. El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. Cuando exista `/auth/refresh`, el cliente renovará la cookie antes de reconectar.
 
 ## 4. Autenticación: JWT de acceso corto y refresh token opaco en cookie
 
@@ -182,3 +182,104 @@ El test de integración levanta dos instancias en el mismo proceso, cada una con
 - que un evento publicado en una llega al cliente de la otra;
 - la presencia entre ellas, incluida una instancia tardía y una que muere;
 - que, si se corta la conexión del listener y se pierde una notificación, el cliente recibe el evento tras la reconexión.
+
+## 9. Tiempo real: por qué SSE, cómo se recupera, métricas y límites
+
+La decisión 3 describe cómo está hecho el stream y la 8 cómo se reparte entre instancias. Esta reúne por qué se eligió así, cómo se mide y hasta dónde llega. El contrato de los mensajes está en [`EVENTS.md`](EVENTS.md).
+
+### SSE frente a WebSockets
+
+| | SSE (elegido) | WebSockets |
+|---|---|---|
+| Dirección | Servidor → cliente. | Bidireccional. |
+| Protocolo | HTTP normal (`GET` + `text/event-stream`): mismos middlewares, CORS, logs, proxies y `requireAccess` que el resto de la API. | Upgrade a otro protocolo: autenticación, autorización y límites aparte, y proxies que deben soportarlo. |
+| Reconexión | La hace el navegador (`retry`) y envía `Last-Event-ID` solo. | A mano, incluido decidir desde dónde seguir. |
+| Escrituras | Siguen por REST, con la guarda de `version` y el 409 con `current` (decisión 1). | Tentación de un segundo camino de escritura con su propio manejo de conflictos. |
+| Autenticación | `EventSource` no envía cabeceras: hace falta la cookie `access_token`, aceptada solo en el stream. | El handshake del navegador tampoco permite cabeceras propias; mismo problema. |
+| Conexiones por navegador | Con HTTP/1.1, máximo 6 por origen, compartidas con el resto de peticiones. Con HTTP/2 se multiplexan. | Una conexión aparte, sin ese límite. |
+| Datos | Solo texto (UTF-8). | Texto o binario. |
+
+**Por qué:** en un kanban, el tiempo real consiste en que los demás vean los cambios. Todo lo que el cliente envía ya tiene su endpoint REST con concurrencia optimista, así que un canal de vuelta no aporta nada y duplicaría la lógica de conflictos. SSE reutiliza la autenticación, la autorización y la observabilidad de la API, y la reconexión con `Last-Event-ID` es exactamente el punto de reanudación que da el log.
+
+**Cuándo replantearlo:** si llegan funciones de alta frecuencia cliente → servidor (cursores en vivo, edición colaborativa de un mismo texto) o si hay que servir sobre HTTP/1.1 a usuarios con muchas pestañas abiertas.
+
+### Reconexión y resync
+
+Un único mecanismo cubre el vivo, la reconexión, el cliente lento y las notificaciones perdidas: **cada stream guarda el id de lo último que envió y siempre lee del log lo posterior**. El hub y `NOTIFY` solo despiertan; nunca son la fuente.
+
+1. **Al conectar:** suscribe y *después* lee el log, para que nada quede entre el reenvío y el vivo. Sin `Last-Event-ID` empieza en vivo.
+2. **Al reconectar** con `Last-Event-ID`: reenvía en orden lo posterior. Si son más de 500, o el id no puede ser de este board, envía `resync` (con `id` = el último evento) y el cliente recarga con `GET /boards/{id}`.
+3. **Cliente lento:** si su buffer (64) se llena, el hub lo da de baja en vez de bloquear la publicación o crecer sin límite. El stream se cierra, `EventSource` reconecta a los 3 s y vuelve al paso 2.
+4. **Notificaciones perdidas** (varias instancias): cada heartbeat (25 s) vuelve a leer el log, y tras reconectar el listener se despiertan todos los streams. El retraso máximo es un heartbeat; no se pierde nada.
+
+**Por qué 500:** más allá, reenviar cuesta más que recargar el board, que son siempre cinco consultas (decisión 6) y deja al cliente en un estado conocido. **Por qué expulsar al lento:** un buffer sin límite convierte un cliente atascado en memoria del servidor, y bloquear haría que un móvil con mala red frenara las escrituras de todos. Como reconectar no pierde nada, expulsar es barato.
+
+### Presencia sin tabla
+
+La presencia se deriva de los streams abiertos. El hub cuenta conexiones por board y usuario, con 4 s de gracia al cerrar la última para que una recarga no se vea como salida y entrada. Entre instancias, cada una anuncia lo suyo por `NOTIFY` (cambios y un latido cada 10 s que caduca a los 30 s), y cada hub muestra la unión (decisión 8).
+
+**Por qué sin tabla:** una tabla pediría una escritura por conexión y desconexión, y un barrido de filas huérfanas cuando una instancia muere sin limpiar. La presencia ya está definida como "quién tiene el stream abierto", y esa información vive en memoria en la instancia que sirve el stream. Con latidos y caducidad, el estado se corrige solo aunque se pierda un mensaje. El precio es que la presencia no sobrevive a un reinicio, lo cual es correcto: al reiniciar, esas conexiones también se cortan.
+
+### Métricas (`GET /metrics`)
+
+Formato de texto de Prometheus con un registro propio de menos de 300 líneas (`adapters/metrics`) en lugar de `client_golang`. Son cuatro métricas, una de ellas con una sola etiqueta, y así no entra una dependencia con su árbol de transitivas.
+
+| Métrica | Dónde se mide |
+|---|---|
+| `tablero_sse_connections` (gauge) | Suscriptores del hub en el momento del scrape. |
+| `tablero_events_published_total{type}` (counter) | `events.Counting`, que envuelve al publicador de los casos de uso: solo los cambios confirmados en esta instancia, no los que llegan de otras. |
+| `tablero_sse_slow_clients_dropped_total` (counter) | El hub, cuando el buffer de un suscriptor está lleno. |
+| `tablero_sse_delivery_seconds` (histogram) | El hub pone `PublishedAt` al publicar (tras el commit) y el handler observa `now − PublishedAt` tras el `Flush` de cada mensaje. Solo eventos en vivo: el reenvío de una reconexión no se mide, porque mediría cuánto estuvo desconectado el cliente. |
+| `go_goroutines`, `go_memstats_*` | `runtime.ReadMemStats`, como mucho una vez cada 100 ms. |
+
+Aproximaciones:
+- Con varias instancias, un evento remoto se sella al llegar a esta, así que la medida no incluye el `NOTIFY` ni la lectura de la fila.
+- Un evento que el heartbeat lee del log antes de que llegue su aviso no se mide (6 de 150 000 en la prueba).
+
+### Prueba de carga
+
+`backend/cmd/loadtest` registra un usuario desechable, crea un board con 20 tareas, abre N streams SSE (con `Authorization: Bearer`) y mueve tareas por turnos a un ritmo fijo, de una en una.
+
+- **Latencia:** se mide en el cliente, desde justo antes de enviar el `PATCH /tasks/{id}/move` hasta que cada stream lee su `task.moved`. Incluye la transacción, así que es una cota superior de lo que mide el servidor.
+- **Memoria:** se lee de `/metrics` antes de conectar, con los clientes conectados en reposo y en el pico durante la carga.
+
+```sh
+cd backend && go run ./cmd/loadtest -url http://localhost:8080 -clients 500 -duration 30s -rate 10
+```
+
+Resultados del 2026-10-25, con `EVENTS_BACKEND=memory`. API, Postgres 16 (Docker) y generador corrían en la misma máquina: Windows 11 con 16 CPU.
+
+| | 500 clientes, 10 mov/s, 30 s | 500 clientes, 40 mov/s pedidos, 20 s |
+|---|---|---|
+| Movimientos | 300 (10/s) | 459 (**22,9/s**: el techo, ver límites) |
+| Eventos recibidos | 150 000 / 150 000 | 229 500 / 229 500 |
+| Latencia cliente p50 / p90 / p99 / max | 30 / 44 / 54 / 66 ms | 60 / 75 / 95 / 117 ms |
+| `PATCH /move` p50 / p99 | 12 / 26 ms | 42 / 65 ms |
+| Servidor, publicar → flush (media; p99) | 18,7 ms; ≤ 50 ms | 18,2 ms; ≤ 50 ms |
+| Expulsados por lentos / reconexiones | 0 / 0 | 0 / 0 |
+
+Memoria del servidor en la primera ejecución (proceso recién arrancado):
+
+| | Antes | 500 conectados | Pico con carga |
+|---|---|---|---|
+| Heap en uso | 20,7 MiB | 22,8 MiB | 38,6 MiB |
+| Stacks | 0,3 MiB | 12,1 MiB | 12,9 MiB |
+| Memoria pedida al SO (`sys`) | 31,1 MiB | 62,8 MiB | 71,0 MiB |
+| Goroutines | 7 | 1007 | 1008 |
+
+Cada conexión cuesta unos **28 KiB** (heap y stack) y dos goroutines: la del handler y la de lectura de `net/http`. El heap de partida ya incluye unos 19 MiB del hash ficticio de argon2id que se calcula al arrancar (decisión 4).
+
+### Límites conocidos
+
+- **Una lectura del log por stream y por evento.** Cada aviso hace que *cada* stream del board lea `activity_log`: con 500 clientes, un movimiento son 500 consultas, y compiten por el pool de pgx con las escrituras. Eso fija el techo medido, unos 23 movimientos/s secuenciales con 500 espectadores, y la mediana del `PATCH` pasa de 12 a 42 ms. No se pierde nada, pero las escrituras se frenan.
+  - La mejora natural es que el hub lea el log **una vez por board** y reparta las filas a sus streams, aplicando a cada uno su cursor y `exclude_self`.
+  - No se ha hecho aún porque complica el reenvío, que sí es por stream.
+- **Memoria lineal:** unos 28 KiB por conexión, es decir, unos 280 MiB para 10 000 streams en una instancia, más sus descriptores de archivo.
+- **Ráfagas mayores que el buffer:** si un cliente acumula 64 avisos sin vaciarse, se le expulsa y reconecta. Con un evento por cambio no pasó en la prueba, pero una importación masiva al ritmo de la base podría provocar reconexiones en cadena. Se recuperan solas, con `resync` si pasan de 500.
+- **HTTP/1.1 en el navegador:** 6 conexiones por origen, y cada pestaña con un board abierto ocupa una de forma permanente. En producción conviene servir la API con HTTP/2.
+- **Token y acceso:** el access token se valida al conectar, y un stream abierto sobrevive a su caducidad hasta que reconecta. La pérdida de acceso se detecta en el siguiente heartbeat, hasta 25 s después.
+- **Ids no consecutivos:** la secuencia es de toda la tabla, así que un salto de id no indica un hueco. El cliente no debe intentar detectar pérdidas por su cuenta.
+- **`/metrics` sin autenticación** y con valores por instancia. Debe quedar solo en la red interna (por el proxy o un puerto aparte); con varias instancias, Prometheus agrega los valores.
+- **Lo que la prueba no cubre:**
+  - Todos los clientes son el mismo usuario, porque aún no hay invitaciones a un workspace, así que no se prueban ráfagas de `presence.joined` y `presence.left`.
+  - Tampoco hay red real ni varias instancias: generador, API y base comparten máquina, así que las latencias son optimistas frente a un despliegue.
