@@ -21,6 +21,7 @@
   --warn: #f5b64a;
   --warn-soft: rgba(245, 182, 74, 0.12);
   --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.55);
+  --tag-l: 0.82; /* oklch lightness of Tag text */
 }
 
 @media (prefers-color-scheme: light) {
@@ -44,6 +45,7 @@
     --warn: #955700;
     --warn-soft: rgba(200, 120, 0, 0.1);
     --shadow-lg: 0 18px 40px rgba(20, 23, 26, 0.16);
+    --tag-l: 0.38;
   }
 }
 
@@ -67,6 +69,7 @@
   --warn: #955700;
   --warn-soft: rgba(200, 120, 0, 0.1);
   --shadow-lg: 0 18px 40px rgba(20, 23, 26, 0.16);
+  --tag-l: 0.38;
 }
 
 /* Expose tokens as Tailwind utilities: bg-surface, text-muted, border-border, ... */
