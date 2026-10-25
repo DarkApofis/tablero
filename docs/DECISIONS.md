@@ -42,14 +42,15 @@ Cómo está hecho (`GET /boards/{id}/events`):
   - Suscribirse y unirse a la presencia es un solo paso bajo el mutex del hub. Así el `presence.snapshot` de una conexión nueva cuadra con los eventos que llegan después, y esa conexión no recibe su propio `joined`.
   - Los mensajes de presencia van **sin `id` SSE**: según el estándar, el navegador conserva entonces el último `Last-Event-ID`, así que no interfieren con el reenvío desde `activity_log`. Tampoco se reenvían, porque cada conexión recibe el estado completo en su snapshot.
   - `GET /boards/{id}/presence` devuelve lo mismo sin abrir el stream.
-  - Límite: como el hub, la presencia vive en un proceso; con varias instancias haría falta compartirla.
+  - Con varias instancias, la presencia es la unión de lo que anuncia cada una (decisión 8).
 - **Excluir los propios eventos** solo si se pide: `?exclude_self=true` o `X-Exclude-Self: true`.
 - Antes de todo se envía `retry: 3000`.
 - **Autenticación por cookie:** `EventSource` no puede enviar cabeceras, así que login y registro también fijan el access token en la cookie `access_token` (`HttpOnly; SameSite=Lax; Path=/boards`). **Solo** el stream la acepta (también acepta Bearer). El resto de la API sigue exigiendo la cabecera `Authorization`, de modo que la cookie no permite CSRF sobre rutas que escriben, y el stream es de solo lectura y está protegido por CORS.
 - **Permiso:** cualquier rol que pueda leer el board (viewer o más), con el mismo `requireAccess` y el mismo 403 que el resto. **Cada heartbeat (`: ping`, cada 25 s) vuelve a comprobar el acceso**: si al usuario lo quitan del workspace, su stream se cierra en el siguiente ping.
 - **Timeouts:** el servidor tiene `WriteTimeout` de 30 s para las respuestas normales. El stream lo reemplaza en su propia conexión con `http.ResponseController`: antes de cada escritura fija un plazo de 10 s y después hace `Flush`. El stream puede durar indefinidamente, pero una conexión muerta se detecta en la siguiente escritura. Un test lo comprueba con un `WriteTimeout` de 150 ms: sin el `ResponseController`, el stream se corta.
 - **Fin limpio:** el stream termina cuando se cancela el contexto (el cliente se desconecta), cuando el hub cierra el canal o al apagar el servidor (`RegisterOnShutdown(hub.Close)`), y siempre cancela su suscripción.
-- **Límites conocidos:** el hub vive en la memoria de un proceso; con varias instancias haría falta un bus compartido (por ejemplo `LISTEN/NOTIFY` de Postgres) detrás del mismo puerto. Los ids no son consecutivos por board (la secuencia es de toda la tabla); solo crecen. El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. Cuando exista `/auth/refresh`, el cliente renovará la cookie antes de reconectar.
+- **Varias instancias:** con `EVENTS_BACKEND=postgres` los eventos y la presencia se comparten por `LISTEN/NOTIFY` (decisión 8).
+- **Límites conocidos:** Los ids no son consecutivos por board (la secuencia es de toda la tabla); solo crecen. El access token se comprueba al conectar, así que un stream abierto sobrevive a su caducidad hasta que se reconecta. Cuando exista `/auth/refresh`, el cliente renovará la cookie antes de reconectar.
 
 ## 4. Autenticación: JWT de acceso corto y refresh token opaco en cookie
 
@@ -153,3 +154,31 @@ Detalles que importan:
   - Los tests HTTP de extremo a extremo siguen igual. Solo cambió cómo se cablean.
 
 **Por qué:** la lógica que más importa (concurrencia optimista, reglas de responsable y etiquetas, autorización, último admin) queda en código sin infraestructura, que se prueba en milisegundos con fakes. La base de datos y HTTP se pueden cambiar o ampliar (como el SSE) sin tocarla. Definir los puertos en el paquete que los consume mantiene las interfaces pequeñas, y la regla de dependencias se comprueba en CI en vez de depender de la disciplina.
+
+## 8. Varias instancias: eventos y presencia por `LISTEN/NOTIFY`
+
+Con `EVENTS_BACKEND=postgres` (el valor por defecto es `memory`), el `EventPublisher` de los casos de uso es `postgres.EventBus` en lugar del Hub. Cada instancia sigue teniendo su Hub, que alimenta los streams de sus propios clientes.
+
+- **Publicar:** el bus entrega el evento al Hub local y hace `pg_notify('tablero_events', …)` con un payload mínimo: `{"k":"e","o":<instancia>,"b":<board>,"id":<id>}`. La entidad no viaja, por el límite de 8000 bytes de `NOTIFY`, y además ya está en `activity_log`.
+- **Escuchar:** cada instancia hace `LISTEN` con una **conexión dedicada** de pgx, fuera del pool (`application_name = tablero-events-<instancia>`). Las notificaciones de otra instancia, si hay suscriptores locales de ese board, se resuelven leyendo la fila de `activity_log` y entregándola al Hub. Las propias se ignoran, porque ya se entregaron.
+- **Reconexión:** si la conexión cae, se reintenta con backoff exponencial (100 ms → 10 s, ±25 %). Tras cada reconexión hay un **resync**: se despiertan todos los streams locales y cada uno lee del log lo posterior a su último id. Así recupera lo que se perdió mientras no escuchaba, sin huecos ni duplicados (decisión 3). Lo mismo ocurre al arrancar.
+- **Red de seguridad:** cada heartbeat del stream (25 s) también vuelve a leer el log. Una notificación perdida retrasa la entrega como mucho un heartbeat; nunca la pierde.
+
+**Presencia entre instancias: el mecanismo más simple sin tabla.** Cada instancia es la fuente de verdad de sus propias conexiones. La presencia global es la **unión** de la local y de lo que anuncian las demás, cada anuncio con caducidad.
+
+- Cuando un usuario entra o sale **en esta instancia** (la salida, tras su retraso de 4 s), se envía `{"k":"p",…,"u":{id,nombre},"on":true|false}`.
+- Cada 10 s hay un **latido** con el conjunto completo por board, en varias partes si se acerca a los 8000 bytes. El latido **reemplaza** lo que esa instancia había anunciado.
+- Lo que una instancia no confirma en 30 s (3 latidos) se olvida, y se emite `presence.left`. Así se cubre una instancia que muere sin despedirse.
+- Al arrancar y al reconectar, una instancia envía `{"k":"h"}` (hello) y las demás responden con su latido en el acto. Una instancia nueva conoce la presencia en milisegundos, no en 10 s.
+- `presence.joined` y `presence.left` se emiten a los clientes locales solo cuando cambia la unión. Si Ana está conectada en A y en B y cierra A, nadie la ve salir.
+
+**Por qué así:** se descartó una tabla de presencia. Pediría escrituras en cada conexión y desconexión, más un barrido de filas huérfanas cuando una instancia muere, y la presencia ya se había definido como derivada del canal. Con latidos y caducidad, el estado se corrige solo aunque se pierda un mensaje, y el costo es un `NOTIFY` pequeño por board con usuarios cada 10 s.
+
+**Límites:**
+- Durante una caída del listener, la presencia remota puede quedar desactualizada hasta el resync, y caduca a los 30 s si la caída es larga.
+- `NOTIFY` no es duradero: si una notificación se pierde, lo que la cubre es el log (para los eventos) o el siguiente latido (para la presencia).
+
+El test de integración levanta dos instancias en el mismo proceso, cada una con su Hub, su bus y su servidor, sobre la base de Testcontainers. Comprueba:
+- que un evento publicado en una llega al cliente de la otra;
+- la presencia entre ellas, incluida una instancia tardía y una que muere;
+- que, si se corta la conexión del listener y se pierde una notificación, el cliente recibe el evento tras la reconexión.

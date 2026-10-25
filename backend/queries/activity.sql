@@ -37,3 +37,12 @@ LIMIT @row_limit;
 -- name: LatestBoardActivityID :one
 SELECT COALESCE(max(id), 0)::bigint FROM activity_log
 WHERE board_id = $1;
+
+-- name: GetActivity :one
+SELECT * FROM activity_log
+WHERE id = $1;
+
+-- NotifyEvents sends a notification on the channel every API instance
+-- listens on (see postgres.EventBus). Payloads must stay under 8000 bytes.
+-- name: NotifyEvents :exec
+SELECT pg_notify('tablero_events', @payload::text);

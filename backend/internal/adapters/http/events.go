@@ -195,6 +195,11 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 			if _, err := h.authz.Authorize(ctx, acc.UserID, acc.WorkspaceID, domain.ActionRead); err != nil {
 				return
 			}
+			// Re-read the log too: if a wake-up was lost (a notification
+			// between instances), the delay is one heartbeat at most.
+			if err := send(); err != nil {
+				return
+			}
 			if err := write(": ping\n\n"); err != nil {
 				return
 			}

@@ -49,6 +49,7 @@ Cambia `JWT_SECRET` por un valor aleatorio de al menos 32 bytes
 | `ACCESS_TOKEN_TTL` | `15m` | Vida del access token |
 | `REFRESH_TOKEN_TTL` | `720h` | Vida del refresh token |
 | `COOKIE_SECURE` | `true` | `Secure` en la cookie del refresh token (funciona en `http://localhost`) |
+| `EVENTS_BACKEND` | `memory` | `memory` para una instancia; `postgres` para varias instancias sobre la misma base (eventos y presencia por `LISTEN/NOTIFY`, [decisión 8](docs/DECISIONS.md)) |
 
 ### 2. Base de datos
 

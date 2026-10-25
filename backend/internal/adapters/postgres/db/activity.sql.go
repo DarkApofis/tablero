@@ -13,6 +13,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getActivity = `-- name: GetActivity :one
+SELECT id, workspace_id, board_id, actor_id, type, payload, created_at FROM activity_log
+WHERE id = $1
+`
+
+func (q *Queries) GetActivity(ctx context.Context, id int64) (ActivityLog, error) {
+	row := q.db.QueryRow(ctx, getActivity, id)
+	var i ActivityLog
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.BoardID,
+		&i.ActorID,
+		&i.Type,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertActivity = `-- name: InsertActivity :one
 INSERT INTO activity_log (workspace_id, board_id, actor_id, type, payload)
 SELECT b.workspace_id, b.id, $1, $2, $3
@@ -170,5 +190,16 @@ SELECT pg_advisory_xact_lock(hashtextextended('activity_log:' || CAST($1 AS uuid
 // InsertActivity, and do nothing but insert and read after it.
 func (q *Queries) LockBoardActivity(ctx context.Context, boardID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, lockBoardActivity, boardID)
+	return err
+}
+
+const notifyEvents = `-- name: NotifyEvents :exec
+SELECT pg_notify('tablero_events', $1::text)
+`
+
+// NotifyEvents sends a notification on the channel every API instance
+// listens on (see postgres.EventBus). Payloads must stay under 8000 bytes.
+func (q *Queries) NotifyEvents(ctx context.Context, payload string) error {
+	_, err := q.db.Exec(ctx, notifyEvents, payload)
 	return err
 }

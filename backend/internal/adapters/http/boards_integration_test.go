@@ -50,28 +50,38 @@ func newDBEnv(t *testing.T) *dbEnv {
 	t.Cleanup(pool.Close)
 
 	tokens := token.NewIssuer(testSecret, 15*time.Minute)
-	txm := postgres.NewTxManager(pool)
 	// A short leave delay keeps the presence tests fast.
 	hub := events.NewHub(events.DefaultBuffer, testLeaveDelay)
 	t.Cleanup(hub.Close)
+	deps := instanceDeps(pool, tokens, hub, hub)
+	return &dbEnv{
+		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: deps.Boards, tasks: deps.Tasks, hub: hub,
+		deps: deps, router: NewRouter(deps),
+	}
+}
+
+// publisher is the EventPublisher port every use case shares.
+type publisher interface {
+	Publish(ctx context.Context, events ...domain.Event)
+}
+
+// instanceDeps wires one API instance like main.go does: hub feeds its
+// streams, pub is what its use cases publish to (the hub itself, or a
+// postgres.EventBus in front of it).
+func instanceDeps(pool *pgxpool.Pool, tokens *token.Issuer, hub *events.Hub, pub publisher) Deps {
+	txm := postgres.NewTxManager(pool)
 	activity := postgres.NewActivity(pool)
-	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), activity, txm, hub)
 	workspaces := postgres.NewWorkspaces(pool)
-	tasks := task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, postgres.NewActivity(pool), txm, hub, systemClock{})
-	deps := Deps{
+	return Deps{
 		Health:     pool,
 		Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
 		Authorizer: workspace.NewAuthorizer(workspaces),
-		Workspaces: workspace.NewService(workspaces, txm, hub),
-		Boards:     boards,
-		Tasks:      tasks,
-		Labels:     board.NewLabelService(postgres.NewLabels(pool), activity, txm, hub),
+		Workspaces: workspace.NewService(workspaces, txm, pub),
+		Boards:     board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), activity, txm, pub),
+		Tasks:      task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, activity, txm, pub, systemClock{}),
+		Labels:     board.NewLabelService(postgres.NewLabels(pool), activity, txm, pub),
 		Activity:   board.NewActivityService(activity),
 		Streams:    board.NewStreamService(hub, activity, postgres.NewUsers(pool), board.DefaultReplayLimit),
-	}
-	return &dbEnv{
-		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks, hub: hub,
-		deps: deps, router: NewRouter(deps),
 	}
 }
 

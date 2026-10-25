@@ -20,6 +20,7 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 // main.go is the composition root: it builds the adapters, hands them to the
@@ -57,10 +58,19 @@ func run() error {
 	slog.Info("database connected")
 
 	tx := postgres.NewTxManager(pool)
-	// The hub is both the use cases' EventPublisher and the source of the
-	// board event streams.
+	// The hub feeds this instance's event streams. With one instance it is
+	// also the use cases' EventPublisher; with several, the Postgres bus is:
+	// it hands events to the hub and NOTIFYs the other instances.
 	hub := events.NewHub(events.DefaultBuffer, events.DefaultLeaveDelay)
-	publisher := hub
+	var publisher interface {
+		Publish(ctx context.Context, events ...domain.Event)
+	} = hub
+	if cfg.EventsBackend == config.EventsPostgres {
+		bus := postgres.NewEventBus(pool, cfg.DatabaseURL, hub, postgres.EventBusOptions{})
+		publisher = bus
+		go func() { _ = bus.Run(ctx) }() // ends with ctx, on shutdown
+		slog.Info("events over postgres LISTEN/NOTIFY", "instance", bus.Instance())
+	}
 
 	users := postgres.NewUsers(pool)
 	workspaces := postgres.NewWorkspaces(pool)

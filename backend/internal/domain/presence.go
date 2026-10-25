@@ -17,6 +17,10 @@ const (
 	EventPresenceSnapshot EventType = "presence.snapshot"
 )
 
+// EventWake is internal and never sent to clients: it tells a board's
+// streams to read the log again (after a listener reconnects, say).
+const EventWake EventType = "wake"
+
 // IsPresence reports whether t is a presence event rather than a change of
 // the board.
 func (t EventType) IsPresence() bool {

@@ -20,16 +20,28 @@ type Config struct {
 	AccessTokenTTL  time.Duration // ACCESS_TOKEN_TTL, default 15m
 	RefreshTokenTTL time.Duration // REFRESH_TOKEN_TTL, default 720h (30 days)
 	CookieSecure    bool          // COOKIE_SECURE, default true
+	// EventsBackend is EVENTS_BACKEND: "memory" (default, one instance) or
+	// "postgres" (LISTEN/NOTIFY, for several instances on one database).
+	EventsBackend string
 }
+
+const (
+	EventsMemory   = "memory"
+	EventsPostgres = "postgres"
+)
 
 func Load() (Config, error) {
 	var errs []error
 
 	cfg := Config{
-		Port:        getenv("PORT", "8080"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		CORSOrigins: splitList(getenv("CORS_ORIGINS", "http://localhost:3000")),
-		JWTSecret:   []byte(os.Getenv("JWT_SECRET")),
+		Port:          getenv("PORT", "8080"),
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		CORSOrigins:   splitList(getenv("CORS_ORIGINS", "http://localhost:3000")),
+		JWTSecret:     []byte(os.Getenv("JWT_SECRET")),
+		EventsBackend: getenv("EVENTS_BACKEND", EventsMemory),
+	}
+	if cfg.EventsBackend != EventsMemory && cfg.EventsBackend != EventsPostgres {
+		errs = append(errs, fmt.Errorf("EVENTS_BACKEND must be %s or %s", EventsMemory, EventsPostgres))
 	}
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))

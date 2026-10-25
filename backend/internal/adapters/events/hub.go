@@ -32,13 +32,21 @@ const (
 // are one presence. presence.joined goes out when the first connection
 // opens; presence.left only once the last one has been closed for the leave
 // delay, and not at all if the user reconnects within it.
+//
+// With several API instances (see postgres.EventBus) presence is the union
+// of this hub's own connections and the sets other instances announce
+// (SetRemotePresence...); joined and left are emitted on changes of that
+// union, and the observer (ObservePresence) hears about local changes so
+// they can be announced.
 type Hub struct {
 	buffer     int
 	leaveDelay time.Duration
 
 	mu       sync.Mutex
 	boards   map[domain.ID]map[*subscriber]struct{}
-	presence map[domain.ID]map[domain.ID]*present // board -> user
+	presence map[domain.ID]map[domain.ID]*present // board -> user, this instance's connections
+	remote   map[domain.ID]map[string]*remoteSet  // board -> instance -> users
+	observer PresenceObserver
 	closed   bool
 }
 
@@ -69,6 +77,7 @@ func NewHub(buffer int, leaveDelay time.Duration) *Hub {
 		buffer: buffer, leaveDelay: leaveDelay,
 		boards:   map[domain.ID]map[*subscriber]struct{}{},
 		presence: map[domain.ID]map[domain.ID]*present{},
+		remote:   map[domain.ID]map[string]*remoteSet{},
 	}
 }
 
@@ -152,6 +161,7 @@ func (h *Hub) Close() {
 		}
 	}
 	h.presence = map[domain.ID]map[domain.ID]*present{}
+	h.remote = map[domain.ID]map[string]*remoteSet{}
 }
 
 // --- with h.mu held ---
@@ -175,9 +185,13 @@ func (h *Hub) join(boardID domain.ID, who domain.Presence) {
 	p := users[who.UserID]
 	switch {
 	case p == nil:
+		already := h.isPresentLocked(boardID, who.UserID) // connected through another instance
 		p = &present{who: who}
 		users[who.UserID] = p
-		h.publishLocked(domain.PresenceEvent(domain.EventPresenceJoined, boardID, who))
+		if !already {
+			h.publishLocked(domain.PresenceEvent(domain.EventPresenceJoined, boardID, who))
+		}
+		h.observe(boardID, who, true)
 	case p.leave != nil:
 		// Back within the leave delay (a reload): nobody saw them leave.
 		p.leave.Stop()
@@ -206,15 +220,27 @@ func (h *Hub) leave(boardID, userID domain.ID) {
 		if len(h.presence[boardID]) == 0 {
 			delete(h.presence, boardID)
 		}
-		h.publishLocked(domain.PresenceEvent(domain.EventPresenceLeft, boardID, p.who))
+		h.observe(boardID, p.who, false)
+		if !h.isPresentLocked(boardID, userID) { // not still connected through another instance
+			h.publishLocked(domain.PresenceEvent(domain.EventPresenceLeft, boardID, p.who))
+		}
 	})
 	p.leave = timer
 }
 
 func (h *Hub) presentLocked(boardID domain.ID) []domain.Presence {
-	out := make([]domain.Presence, 0, len(h.presence[boardID]))
-	for _, p := range h.presence[boardID] {
-		out = append(out, p.who)
+	byUser := map[domain.ID]domain.Presence{}
+	for _, set := range h.remote[boardID] {
+		for id, p := range set.users {
+			byUser[id] = p
+		}
+	}
+	for id, p := range h.presence[boardID] {
+		byUser[id] = p.who
+	}
+	out := make([]domain.Presence, 0, len(byUser))
+	for _, p := range byUser {
+		out = append(out, p)
 	}
 	slices.SortFunc(out, func(a, b domain.Presence) int {
 		if c := strings.Compare(a.Name, b.Name); c != 0 {
