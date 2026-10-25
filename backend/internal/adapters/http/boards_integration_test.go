@@ -51,10 +51,11 @@ func newDBEnv(t *testing.T) *dbEnv {
 
 	tokens := token.NewIssuer(testSecret, 15*time.Minute)
 	txm := postgres.NewTxManager(pool)
-	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), txm)
-	workspaces := postgres.NewWorkspaces(pool)
 	hub := events.NewHub(events.DefaultBuffer)
 	t.Cleanup(hub.Close)
+	activity := postgres.NewActivity(pool)
+	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), activity, txm, hub)
+	workspaces := postgres.NewWorkspaces(pool)
 	tasks := task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, postgres.NewActivity(pool), txm, hub, systemClock{})
 	deps := Deps{
 		Health:     pool,
@@ -63,9 +64,9 @@ func newDBEnv(t *testing.T) *dbEnv {
 		Workspaces: workspace.NewService(workspaces, txm, hub),
 		Boards:     boards,
 		Tasks:      tasks,
-		Labels:     board.NewLabelService(postgres.NewLabels(pool)),
-		Activity:   board.NewActivityService(postgres.NewActivity(pool)),
-		Streams:    board.NewStreamService(hub),
+		Labels:     board.NewLabelService(postgres.NewLabels(pool), activity, txm, hub),
+		Activity:   board.NewActivityService(activity),
+		Streams:    board.NewStreamService(hub, activity, board.DefaultReplayLimit),
 	}
 	return &dbEnv{
 		t: t, pool: pool, q: db.New(pool), tokens: tokens, boards: boards, tasks: tasks, hub: hub,

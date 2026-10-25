@@ -311,7 +311,7 @@ func TestRemoveMemberPublishesUnassignmentsAfterCommit(t *testing.T) {
 		t.Fatalf("events = %d, commits = %d; want 3 events after 1 commit", len(e.events.events), e.tx.committed)
 	}
 	for _, ev := range e.events.events {
-		if ev.Type != domain.ActivityTaskUpdated || ev.WorkspaceID != e.ws || ev.ActorID == nil || *ev.ActorID != admin.UserID {
+		if ev.Type != domain.EventTaskUpdated || ev.WorkspaceID != e.ws || ev.ActorID == nil || *ev.ActorID != admin.UserID {
 			t.Errorf("event = %+v", ev)
 		}
 	}

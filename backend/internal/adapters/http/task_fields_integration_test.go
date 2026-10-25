@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/DarkApofis/tablero/backend/internal/adapters/events"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres"
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db"
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
@@ -62,7 +63,7 @@ func (f *taskFixture) patchOK(id uuid.UUID, body map[string]any, as testUser) ta
 func (f *taskFixture) lastChanges() map[string]domain.FieldChange {
 	f.t.Helper()
 	page := f.activity(f.board, "limit=1", f.admin)
-	if len(page.Items) != 1 || page.Items[0].Type != domain.ActivityTaskUpdated {
+	if len(page.Items) != 1 || (page.Items[0].Type != domain.ActivityTaskUpdated && page.Items[0].Type != domain.ActivityTaskArchived) {
 		f.t.Fatalf("last activity = %+v", page.Items)
 	}
 	return decodePayload[domain.TaskUpdatedPayload](f.t, page.Items[0].Payload).Changes
@@ -504,7 +505,7 @@ func TestGetBoardQueryCountDoesNotGrowWithTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), postgres.NewTxManager(pool))
+	boards := board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), postgres.NewActivity(pool), postgres.NewTxManager(pool), events.Noop{})
 
 	queries := func() int64 {
 		t.Helper()

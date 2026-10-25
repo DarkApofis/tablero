@@ -101,6 +101,32 @@ func (q *Queries) GetColumnWorkspaceID(ctx context.Context, id uuid.UUID) (uuid.
 	return workspace_id, err
 }
 
+const listColumnTaskIDs = `-- name: ListColumnTaskIDs :many
+SELECT id FROM tasks
+WHERE column_id = $1
+ORDER BY position, id
+`
+
+func (q *Queries) ListColumnTaskIDs(ctx context.Context, columnID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listColumnTaskIDs, columnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listColumnsByBoard = `-- name: ListColumnsByBoard :many
 SELECT id, board_id, name, position, created_at FROM columns
 WHERE board_id = $1

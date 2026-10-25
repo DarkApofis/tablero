@@ -63,10 +63,22 @@ SELECT user_id FROM workspace_members
 WHERE workspace_id = $1 AND user_id = $2
 FOR KEY SHARE;
 
+-- LockMemberTasks locks the tasks UnassignMemberTasks is about to change and
+-- returns their boards (one row per task), so the caller can take each
+-- board's LockBoardActivity before the entries are written.
+-- name: LockMemberTasks :many
+SELECT c.board_id
+FROM tasks t
+JOIN columns c ON c.id = t.column_id
+JOIN boards b ON b.id = c.board_id
+WHERE b.workspace_id = @workspace_id::uuid AND t.assignee_id = @user_id::uuid
+FOR UPDATE OF t;
+
 -- UnassignMemberTasks runs when a member is removed: it unassigns their tasks
 -- in the workspace, bumping each version as any edit does, and logs one
 -- task_updated entry per task with the same payload shape the service writes
--- (service.TaskUpdatedPayload).
+-- (domain.TaskUpdatedPayload). Run it after LockMemberTasks and the boards'
+-- LockBoardActivity, in the same transaction.
 -- name: UnassignMemberTasks :many
 WITH unassigned AS (
     UPDATE tasks t

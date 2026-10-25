@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,14 +23,19 @@ const (
 	defaultStreamWriteTimeout = 10 * time.Second
 	// streamRetryMillis tells EventSource how soon to reconnect.
 	streamRetryMillis = 3000
+
+	excludeSelfHeader = "X-Exclude-Self"
 )
 
-// streamEvent is the data of each SSE message; it mirrors an activity item.
+// streamEvent is the data of each SSE message.
 type streamEvent struct {
-	ID        int64           `json:"id"` // activity id, also the SSE id
-	Type      string          `json:"type"`
-	BoardID   uuid.UUID       `json:"board_id"`
-	ActorID   *uuid.UUID      `json:"actor_id"`
+	ID      int64            `json:"id"` // activity id, also the SSE id
+	Type    domain.EventType `json:"type"`
+	BoardID uuid.UUID        `json:"board_id"`
+	ActorID *uuid.UUID       `json:"actor_id"`
+	// Version is the task's version after the change; null for column and
+	// label events.
+	Version   *int32          `json:"version"`
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt time.Time       `json:"created_at"`
 }
@@ -42,19 +48,24 @@ type eventsHandler struct {
 }
 
 // stream: GET /boards/{id}/events, a text/event-stream of the board's
-// changes. Every heartbeat it sends a ": ping" comment and re-checks that
-// the user can still read the board (they may have been removed meanwhile).
-// It returns when the client disconnects, when the hub drops a slow client
-// (EventSource then reconnects) or when the server shuts down.
+// committed changes. With Last-Event-ID (header, or ?last_event_id= when
+// opening a new EventSource) it first replays what the client missed, or
+// sends a resync if that is too much. ?exclude_self=true (or the
+// X-Exclude-Self: true header) leaves out the caller's own changes.
+//
+// Every heartbeat it sends ": ping" and re-checks that the user can still
+// read the board. It returns when the client disconnects, when the hub drops
+// a slow client (it reconnects and catches up) or when the server shuts down.
 func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	acc := access(r)
-	events, cancel, err := h.streams.Watch(ctx, acc, pathID(r))
+	opts := board.StreamOptions{LastEventID: lastEventID(r), ExcludeSelf: excludeSelf(r)}
+	st, err := h.streams.Open(ctx, acc, pathID(r), opts)
 	if err != nil {
-		writeBoardError(w, r, "watch board", err)
+		writeBoardError(w, r, "open board stream", err)
 		return
 	}
-	defer cancel()
+	defer st.Close()
 
 	rc := http.NewResponseController(w)
 	// write sets a fresh deadline before each write: it replaces the server's
@@ -68,6 +79,28 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		return rc.Flush()
 	}
+	// send writes what is new in the log since the last message sent.
+	send := func() error {
+		msgs, err := st.Pull(ctx)
+		if err != nil {
+			return err
+		}
+		for _, m := range msgs {
+			if m.Resync {
+				err = write("id: %d\nevent: resync\ndata: {\"last_event_id\":%d}\n\n", m.ID, m.ID)
+			} else {
+				data, encErr := json.Marshal(newStreamEvent(m.Event))
+				if encErr != nil {
+					return encErr
+				}
+				err = write("id: %d\nevent: %s\ndata: %s\n\n", m.ID, m.Event.Type, data)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream")
@@ -75,6 +108,9 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
 	w.WriteHeader(http.StatusOK)
 	if err := write("retry: %d\n\n", streamRetryMillis); err != nil {
+		return
+	}
+	if err := send(); err != nil { // the replay, if reconnecting
 		return
 	}
 
@@ -85,16 +121,12 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return // client went away
 
-		case ev, ok := <-events:
+		case _, ok := <-st.Wake():
 			if !ok {
 				return // dropped as too slow, or shutting down
 			}
-			data, err := json.Marshal(newStreamEvent(ev))
-			if err != nil {
-				slog.Error("encode stream event", "err", err, "request_id", RequestID(ctx))
-				continue
-			}
-			if err := write("id: %d\nevent: %s\ndata: %s\n\n", ev.ActivityID, ev.Type, data); err != nil {
+			drain(st.Wake()) // one read of the log covers every pending wake-up
+			if err := send(); err != nil {
 				return
 			}
 
@@ -109,9 +141,51 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func drain(ch <-chan domain.Event) {
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// lastEventID reads Last-Event-ID (sent by EventSource when it reconnects)
+// or ?last_event_id=. Anything that is not an id this API handed out still
+// means the client has some state, so it becomes 0: replay from the start,
+// or resync if that is too much.
+func lastEventID(r *http.Request) *int64 {
+	v := r.Header.Get("Last-Event-ID")
+	if v == "" {
+		v = r.URL.Query().Get("last_event_id")
+	}
+	if v == "" {
+		return nil
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || id < 0 {
+		id = 0
+	}
+	return &id
+}
+
+func excludeSelf(r *http.Request) bool {
+	v := r.URL.Query().Get("exclude_self")
+	if v == "" {
+		v = r.Header.Get(excludeSelfHeader)
+	}
+	b, _ := strconv.ParseBool(v)
+	return b
+}
+
 func newStreamEvent(ev domain.Event) streamEvent {
 	out := streamEvent{
-		ID: ev.ActivityID, Type: ev.Type, BoardID: uuid.UUID(ev.BoardID), Payload: ev.Payload, CreatedAt: ev.OccurredAt,
+		ID: ev.ID, Type: ev.Type, BoardID: uuid.UUID(ev.BoardID), Version: ev.TaskVersion,
+		Payload: ev.Payload, CreatedAt: ev.OccurredAt,
 	}
 	if ev.ActorID != nil {
 		id := uuid.UUID(*ev.ActorID)

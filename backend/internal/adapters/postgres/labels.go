@@ -21,6 +21,13 @@ func (r *Labels) WorkspaceOfLabel(ctx context.Context, labelID domain.ID) (domai
 	return domain.ID(id), notFound(err, domain.ErrNotMember)
 }
 
+// GetLabelForUpdate reads a label and locks it until the transaction ends;
+// domain.ErrLabelNotFound if there is none.
+func (r *Labels) GetLabelForUpdate(ctx context.Context, labelID domain.ID) (domain.Label, error) {
+	l, err := r.q(ctx).GetLabelForUpdate(ctx, uuid.UUID(labelID))
+	return toLabel(l), notFound(err, domain.ErrLabelNotFound)
+}
+
 func (r *Labels) ListLabels(ctx context.Context, boardID domain.ID) ([]domain.Label, error) {
 	rows, err := r.q(ctx).ListLabelsByBoard(ctx, uuid.UUID(boardID))
 	return mapAll(rows, toLabel), err

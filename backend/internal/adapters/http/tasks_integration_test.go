@@ -42,6 +42,9 @@ func newTaskFixture(t *testing.T) *taskFixture {
 	})
 	f.board = e.board(f.ws, "Sprint")
 	f.todo, f.doing, f.done = e.column(f.board, "Por hacer"), e.column(f.board, "En curso"), e.column(f.board, "Hecho")
+	// Creating the columns logged column_created entries; tests count and
+	// stream the board's log from here on, so start it empty.
+	e.exec("DELETE FROM activity_log WHERE board_id = $1", f.board)
 	return f
 }
 

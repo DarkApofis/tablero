@@ -207,6 +207,14 @@ func (m *memStore) Rebalance(_ context.Context, col domain.ID) error {
 	return nil
 }
 
+func (m *memStore) ColumnPositions(_ context.Context, col domain.ID) ([]domain.TaskPosition, error) {
+	var out []domain.TaskPosition
+	for _, t := range m.column(col, domain.NilID) {
+		out = append(out, domain.TaskPosition{TaskID: t.ID, Position: t.Position})
+	}
+	return out, nil
+}
+
 // --- BoardRepository, WorkspaceRepository, ActivityRepository ---
 
 func (m *memStore) GetColumn(_ context.Context, id domain.ID) (domain.Column, error) {
@@ -249,7 +257,7 @@ func (m *memStore) Append(_ context.Context, a domain.NewActivity) (domain.Activ
 		return domain.ActivityEntry{}, m.failAppend
 	}
 	e := domain.ActivityEntry{
-		ID: int64(len(m.activity) + 1), WorkspaceID: a.WorkspaceID, BoardID: a.BoardID, ActorID: a.ActorID,
+		ID: int64(len(m.activity) + 1), WorkspaceID: m.boardWS[a.BoardID], BoardID: a.BoardID, ActorID: a.ActorID,
 		Type: a.Type, Payload: a.Payload, CreatedAt: time.Now(),
 	}
 	m.activity = append(m.activity, e)

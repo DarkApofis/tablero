@@ -32,6 +32,10 @@ type BoardRepository interface {
 	ListColumns(ctx context.Context, boardID domain.ID) ([]domain.Column, error)
 	// GetColumn, RenameColumn and DeleteColumn return domain.ErrColumnNotFound.
 	GetColumn(ctx context.Context, columnID domain.ID) (domain.Column, error)
+	// LockColumn keeps the column from changing until the transaction ends.
+	LockColumn(ctx context.Context, columnID domain.ID) error
+	// ColumnTaskIDs returns the ids of the column's tasks.
+	ColumnTaskIDs(ctx context.Context, columnID domain.ID) ([]domain.ID, error)
 	CreateColumn(ctx context.Context, boardID domain.ID, name string, position float64) (domain.Column, error)
 	RenameColumn(ctx context.Context, columnID domain.ID, name string) (domain.Column, error)
 	SetColumnPosition(ctx context.Context, columnID domain.ID, position float64) (domain.Column, error)
@@ -55,6 +59,9 @@ type LabelRepository interface {
 	// CreateLabel returns domain.ErrLabelNameTaken or, if the board is gone,
 	// domain.ErrBoardNotFound.
 	CreateLabel(ctx context.Context, boardID domain.ID, name, color string) (domain.Label, error)
+	// GetLabelForUpdate reads a label and locks it until the transaction ends;
+	// domain.ErrLabelNotFound.
+	GetLabelForUpdate(ctx context.Context, labelID domain.ID) (domain.Label, error)
 	// UpdateLabel changes the fields that are not nil; domain.ErrLabelNotFound
 	// or domain.ErrLabelNameTaken.
 	UpdateLabel(ctx context.Context, labelID domain.ID, name, color *string) (domain.Label, error)
@@ -73,15 +80,17 @@ type TxManager interface {
 	InReadTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// Service implements the board and column use cases.
+// Service implements the board and column use cases. Column changes are
+// logged and published as events, like task changes.
 type Service struct {
 	boards BoardRepository
 	labels LabelRepository
 	tx     TxManager
+	rec    recorder
 }
 
-func NewService(boards BoardRepository, labels LabelRepository, tx TxManager) *Service {
-	return &Service{boards: boards, labels: labels, tx: tx}
+func NewService(boards BoardRepository, labels LabelRepository, activity ActivityWriter, tx TxManager, events EventPublisher) *Service {
+	return &Service{boards: boards, labels: labels, tx: tx, rec: recorder{activity: activity, events: events}}
 }
 
 // WorkspaceOfBoard resolves a board to its workspace for authorization.
@@ -192,6 +201,7 @@ func (s *Service) CreateColumn(ctx context.Context, acc domain.Access, boardID d
 	}
 
 	var col domain.Column
+	var logged domain.ActivityEntry
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
 		if err := s.boards.LockBoard(ctx, boardID); err != nil {
 			return fmt.Errorf("lock board: %w", err)
@@ -205,10 +215,19 @@ func (s *Service) CreateColumn(ctx context.Context, acc domain.Access, boardID d
 			last = &columns[n-1].Position
 		}
 		pos, _ := domain.PositionBetween(last, nil) // appending always has room
-		col, err = s.boards.CreateColumn(ctx, boardID, name, pos)
+		if col, err = s.boards.CreateColumn(ctx, boardID, name, pos); err != nil {
+			return err
+		}
+		logged, err = s.rec.log(ctx, acc, boardID, domain.ActivityColumnCreated, domain.ColumnCreatedPayload{
+			ColumnID: col.ID, Name: col.Name, Position: col.Position,
+		})
 		return err
 	})
-	return col, err
+	if err != nil {
+		return domain.Column{}, err
+	}
+	s.rec.publish(ctx, logged)
+	return col, nil
 }
 
 func (s *Service) RenameColumn(ctx context.Context, acc domain.Access, columnID domain.ID, name string) (domain.Column, error) {
@@ -219,15 +238,71 @@ func (s *Service) RenameColumn(ctx context.Context, acc domain.Access, columnID 
 	if err != nil {
 		return domain.Column{}, err
 	}
-	return s.boards.RenameColumn(ctx, columnID, name)
+
+	var col domain.Column
+	var logged domain.ActivityEntry
+	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.boards.LockColumn(ctx, columnID); err != nil {
+			return fmt.Errorf("lock column: %w", err)
+		}
+		before, err := s.boards.GetColumn(ctx, columnID)
+		if err != nil {
+			return err
+		}
+		if col, err = s.boards.RenameColumn(ctx, columnID, name); err != nil {
+			return err
+		}
+		changes := map[string]domain.FieldChange{}
+		if before.Name != col.Name {
+			changes["name"] = domain.FieldChange{From: before.Name, To: col.Name}
+		}
+		logged, err = s.rec.log(ctx, acc, col.BoardID, domain.ActivityColumnUpdated, domain.ColumnUpdatedPayload{
+			ColumnID: col.ID, Name: col.Name, Changes: changes,
+		})
+		return err
+	})
+	if err != nil {
+		return domain.Column{}, err
+	}
+	s.rec.publish(ctx, logged)
+	return col, nil
 }
 
-// DeleteColumn deletes the column with its tasks.
+// DeleteColumn deletes the column with its tasks; the event lists them.
 func (s *Service) DeleteColumn(ctx context.Context, acc domain.Access, columnID domain.ID) error {
 	if err := acc.Require(domain.ActionManageBoards); err != nil {
 		return err
 	}
-	return s.boards.DeleteColumn(ctx, columnID)
+	var logged domain.ActivityEntry
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		// Locked first, so no task can be added to it between listing and deleting.
+		if err := s.boards.LockColumn(ctx, columnID); err != nil {
+			return fmt.Errorf("lock column: %w", err)
+		}
+		col, err := s.boards.GetColumn(ctx, columnID)
+		if err != nil {
+			return err
+		}
+		taskIDs, err := s.boards.ColumnTaskIDs(ctx, columnID)
+		if err != nil {
+			return fmt.Errorf("list column tasks: %w", err)
+		}
+		if err := s.boards.DeleteColumn(ctx, columnID); err != nil {
+			return err
+		}
+		if taskIDs == nil {
+			taskIDs = []domain.ID{}
+		}
+		logged, err = s.rec.log(ctx, acc, col.BoardID, domain.ActivityColumnDeleted, domain.ColumnDeletedPayload{
+			ColumnID: col.ID, Name: col.Name, DeletedTaskIDs: taskIDs,
+		})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	s.rec.publish(ctx, logged)
+	return nil
 }
 
 // MoveColumn places columnID right after afterID in its board, or first when
@@ -242,6 +317,7 @@ func (s *Service) MoveColumn(ctx context.Context, acc domain.Access, columnID do
 	}
 
 	var moved domain.Column
+	var logged domain.ActivityEntry
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		col, err := s.boards.GetColumn(ctx, columnID)
 		if err != nil {
@@ -251,6 +327,7 @@ func (s *Service) MoveColumn(ctx context.Context, acc domain.Access, columnID do
 			return fmt.Errorf("lock board: %w", err)
 		}
 
+		rebalanced := false
 		for attempt := 0; ; attempt++ {
 			others, err := s.boards.ListColumns(ctx, col.BoardID)
 			if err != nil {
@@ -263,7 +340,21 @@ func (s *Service) MoveColumn(ctx context.Context, acc domain.Access, columnID do
 				return err
 			}
 			if pos, ok := domain.PositionBetween(prev, next); ok {
-				moved, err = s.boards.SetColumnPosition(ctx, columnID, pos)
+				if moved, err = s.boards.SetColumnPosition(ctx, columnID, pos); err != nil {
+					return err
+				}
+				payload := domain.ColumnReorderedPayload{ColumnID: moved.ID, Name: moved.Name, From: col.Position, To: moved.Position}
+				if rebalanced {
+					// The other columns moved too; clients need their positions.
+					all, err := s.boards.ListColumns(ctx, col.BoardID)
+					if err != nil {
+						return fmt.Errorf("list columns: %w", err)
+					}
+					for _, c := range all {
+						payload.Rebalanced = append(payload.Rebalanced, domain.ColumnPosition{ColumnID: c.ID, Position: c.Position})
+					}
+				}
+				logged, err = s.rec.log(ctx, acc, col.BoardID, domain.ActivityColumnReordered, payload)
 				return err
 			}
 			if attempt > 0 {
@@ -272,7 +363,12 @@ func (s *Service) MoveColumn(ctx context.Context, acc domain.Access, columnID do
 			if err := s.boards.RebalanceColumns(ctx, col.BoardID); err != nil {
 				return fmt.Errorf("rebalance columns: %w", err)
 			}
+			rebalanced = true
 		}
 	})
-	return moved, err
+	if err != nil {
+		return domain.Column{}, err
+	}
+	s.rec.publish(ctx, logged)
+	return moved, nil
 }

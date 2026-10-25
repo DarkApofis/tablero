@@ -95,6 +95,11 @@ WHERE column_id = @column_id
 ORDER BY position DESC, id DESC
 LIMIT 1;
 
+-- name: ListColumnTaskPositions :many
+SELECT id, position FROM tasks
+WHERE column_id = $1
+ORDER BY position, id;
+
 -- RebalanceTasks spreads a column's tasks evenly (1024, 2048, ...) keeping
 -- their order. The outer column_id check matters under READ COMMITTED: a task
 -- moved out of the column concurrently must not get a position here.

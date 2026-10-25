@@ -10,7 +10,7 @@ import (
 )
 
 func event(board domain.ID, id int64) domain.Event {
-	return domain.Event{Type: domain.ActivityTaskUpdated, BoardID: board, ActivityID: id}
+	return domain.Event{Type: domain.ActivityTaskUpdated, BoardID: board, ID: id}
 }
 
 // receive reads n events or fails after a second.
@@ -23,7 +23,7 @@ func receive(t *testing.T, ch <-chan domain.Event, n int) []int64 {
 			if !ok {
 				t.Fatalf("channel closed after %d events", len(ids))
 			}
-			ids = append(ids, ev.ActivityID)
+			ids = append(ids, ev.ID)
 		case <-time.After(time.Second):
 			t.Fatalf("timed out after %d events", len(ids))
 		}
@@ -93,7 +93,7 @@ func TestSlowSubscriberIsDroppedWithoutBlocking(t *testing.T) {
 			select {
 			case ev, ok := <-fast:
 				if ok {
-					fastGot = append(fastGot, ev.ActivityID)
+					fastGot = append(fastGot, ev.ID)
 				}
 			case <-time.After(time.Second):
 				return

@@ -111,6 +111,27 @@ func (q *Queries) FilterBoardLabels(ctx context.Context, arg FilterBoardLabelsPa
 	return items, nil
 }
 
+const getLabelForUpdate = `-- name: GetLabelForUpdate :one
+SELECT id, board_id, name, color, created_at FROM labels
+WHERE id = $1
+FOR NO KEY UPDATE
+`
+
+// GetLabelForUpdate reads a label to change it. NO KEY UPDATE: assigning it to
+// a task (FilterBoardLabels, FOR KEY SHARE) is still allowed meanwhile.
+func (q *Queries) GetLabelForUpdate(ctx context.Context, id uuid.UUID) (Label, error) {
+	row := q.db.QueryRow(ctx, getLabelForUpdate, id)
+	var i Label
+	err := row.Scan(
+		&i.ID,
+		&i.BoardID,
+		&i.Name,
+		&i.Color,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getLabelWorkspaceID = `-- name: GetLabelWorkspaceID :one
 SELECT b.workspace_id
 FROM labels l

@@ -3,6 +3,9 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -90,8 +93,25 @@ func (r *Workspaces) RemoveMember(ctx context.Context, workspaceID, userID domai
 	return err
 }
 
+// UnassignTasks must run inside a transaction. It locks the tasks first and
+// then, in a fixed order, the activity lock of each board involved, like
+// every other writer of the log (see Activity.Append), before writing.
 func (r *Workspaces) UnassignTasks(ctx context.Context, workspaceID, userID, actorID domain.ID) ([]domain.ActivityEntry, error) {
-	rows, err := r.q(ctx).UnassignMemberTasks(ctx, db.UnassignMemberTasksParams{
+	q := r.q(ctx)
+	boards, err := q.LockMemberTasks(ctx, db.LockMemberTasksParams{WorkspaceID: uuid.UUID(workspaceID), UserID: uuid.UUID(userID)})
+	if err != nil {
+		return nil, fmt.Errorf("lock member tasks: %w", err)
+	}
+	if len(boards) == 0 {
+		return nil, nil
+	}
+	slices.SortFunc(boards, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	for _, b := range slices.Compact(boards) {
+		if err := q.LockBoardActivity(ctx, b); err != nil {
+			return nil, fmt.Errorf("lock board activity: %w", err)
+		}
+	}
+	rows, err := q.UnassignMemberTasks(ctx, db.UnassignMemberTasksParams{
 		WorkspaceID: uuid.UUID(workspaceID), UserID: uuid.UUID(userID), ActorID: uuid.UUID(actorID),
 	})
 	if err != nil {

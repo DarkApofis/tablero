@@ -206,6 +206,43 @@ func (q *Queries) ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) (
 	return items, nil
 }
 
+const lockMemberTasks = `-- name: LockMemberTasks :many
+SELECT c.board_id
+FROM tasks t
+JOIN columns c ON c.id = t.column_id
+JOIN boards b ON b.id = c.board_id
+WHERE b.workspace_id = $1::uuid AND t.assignee_id = $2::uuid
+FOR UPDATE OF t
+`
+
+type LockMemberTasksParams struct {
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
+}
+
+// LockMemberTasks locks the tasks UnassignMemberTasks is about to change and
+// returns their boards (one row per task), so the caller can take each
+// board's LockBoardActivity before the entries are written.
+func (q *Queries) LockMemberTasks(ctx context.Context, arg LockMemberTasksParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockMemberTasks, arg.WorkspaceID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var board_id uuid.UUID
+		if err := rows.Scan(&board_id); err != nil {
+			return nil, err
+		}
+		items = append(items, board_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockMembership = `-- name: LockMembership :one
 SELECT user_id FROM workspace_members
 WHERE workspace_id = $1 AND user_id = $2
@@ -277,7 +314,8 @@ type UnassignMemberTasksParams struct {
 // UnassignMemberTasks runs when a member is removed: it unassigns their tasks
 // in the workspace, bumping each version as any edit does, and logs one
 // task_updated entry per task with the same payload shape the service writes
-// (service.TaskUpdatedPayload).
+// (domain.TaskUpdatedPayload). Run it after LockMemberTasks and the boards'
+// LockBoardActivity, in the same transaction.
 func (q *Queries) UnassignMemberTasks(ctx context.Context, arg UnassignMemberTasksParams) ([]ActivityLog, error) {
 	rows, err := q.db.Query(ctx, unassignMemberTasks, arg.WorkspaceID, arg.ActorID, arg.UserID)
 	if err != nil {

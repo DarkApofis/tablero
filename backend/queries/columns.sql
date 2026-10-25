@@ -42,6 +42,11 @@ SET position = $2
 WHERE id = $1
 RETURNING *;
 
+-- name: ListColumnTaskIDs :many
+SELECT id FROM tasks
+WHERE column_id = $1
+ORDER BY position, id;
+
 -- Tasks go with it (ON DELETE CASCADE).
 -- name: DeleteColumn :execrows
 DELETE FROM columns

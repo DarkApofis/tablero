@@ -45,6 +45,8 @@ type TaskRepository interface {
 	PositionBefore(ctx context.Context, columnID, excludeID domain.ID, neighbor domain.Task) (*float64, error)
 	// Rebalance spreads a column's tasks evenly, keeping their order.
 	Rebalance(ctx context.Context, columnID domain.ID) error
+	// ColumnPositions returns the position of every task in the column, in order.
+	ColumnPositions(ctx context.Context, columnID domain.ID) ([]domain.TaskPosition, error)
 }
 
 // BoardRepository is the part of the boards the task use cases need.
@@ -68,6 +70,8 @@ type WorkspaceRepository interface {
 }
 
 type ActivityRepository interface {
+	// Append writes the entry; it must be the last write of the transaction
+	// (it serializes the board's log until the transaction ends).
 	Append(ctx context.Context, entry domain.NewActivity) (domain.ActivityEntry, error)
 }
 
@@ -183,8 +187,8 @@ func (s *Service) Create(ctx context.Context, acc domain.Access, in CreateInput)
 		}
 
 		if logged, err = s.log(ctx, loc, acc.UserID, domain.ActivityTaskCreated, domain.TaskCreatedPayload{
-			TaskID: created.ID, Title: created.Title, ColumnID: created.ColumnID, Position: created.Position,
-			Priority: created.Priority, DueDate: domain.FormatDate(created.DueDate),
+			TaskID: created.ID, Title: created.Title, Description: created.Description, ColumnID: created.ColumnID,
+			Position: created.Position, Version: created.Version, Priority: created.Priority, DueDate: domain.FormatDate(created.DueDate),
 			AssigneeID: created.AssigneeID, LabelIDs: fields.LabelIDs,
 		}); err != nil {
 			return err
@@ -262,7 +266,11 @@ func (s *Service) Update(ctx context.Context, acc domain.Access, taskID domain.I
 		// Diff against what was stored, using the values the write returned
 		// (archived_at as the database rounded it).
 		stored := domain.FieldsOf(updated, next.LabelIDs)
-		if logged, err = s.log(ctx, loc, acc.UserID, domain.ActivityTaskUpdated, domain.TaskUpdatedPayload{
+		typ := domain.ActivityTaskUpdated
+		if old.ArchivedAt == nil && stored.ArchivedAt != nil {
+			typ = domain.ActivityTaskArchived
+		}
+		if logged, err = s.log(ctx, loc, acc.UserID, typ, domain.TaskUpdatedPayload{
 			TaskID: updated.ID, Title: updated.Title, Version: updated.Version, Changes: old.Diff(stored),
 		}); err != nil {
 			return err
@@ -339,6 +347,7 @@ func (s *Service) Move(ctx context.Context, acc domain.Access, taskID domain.ID,
 			return domain.Invalid("columnId", "La columna debe pertenecer al mismo tablero")
 		}
 
+		rebalanced := false
 		for attempt := 0; ; attempt++ {
 			prev, next, err := s.neighbors(ctx, task, in)
 			if err != nil {
@@ -355,11 +364,18 @@ func (s *Service) Move(ctx context.Context, acc domain.Access, taskID domain.ID,
 				if err != nil {
 					return fmt.Errorf("locate column: %w", err)
 				}
-				if logged, err = s.log(ctx, loc, acc.UserID, domain.ActivityTaskMoved, domain.TaskMovedPayload{
+				payload := domain.TaskMovedPayload{
 					TaskID: moved.ID, Title: moved.Title, Version: moved.Version,
 					From: domain.TaskPlacement{ColumnID: task.ColumnID, Position: task.Position},
 					To:   domain.TaskPlacement{ColumnID: moved.ColumnID, Position: moved.Position},
-				}); err != nil {
+				}
+				if rebalanced {
+					// Other tasks of the column moved too; clients need their positions.
+					if payload.Rebalanced, err = s.tasks.ColumnPositions(ctx, target.ID); err != nil {
+						return fmt.Errorf("column positions: %w", err)
+					}
+				}
+				if logged, err = s.log(ctx, loc, acc.UserID, domain.ActivityTaskMoved, payload); err != nil {
 					return err
 				}
 				result, err = s.tasks.Detail(ctx, taskID)
@@ -371,6 +387,7 @@ func (s *Service) Move(ctx context.Context, acc domain.Access, taskID domain.ID,
 			if err := s.tasks.Rebalance(ctx, target.ID); err != nil {
 				return fmt.Errorf("rebalance tasks: %w", err)
 			}
+			rebalanced = true
 		}
 	})
 	switch {
@@ -429,11 +446,34 @@ func (s *Service) neighbors(ctx context.Context, moving domain.Task, in MoveInpu
 	}
 }
 
+// Delete removes the task; the task.deleted event carries its last version.
 func (s *Service) Delete(ctx context.Context, acc domain.Access, taskID domain.ID) error {
 	if err := acc.Require(domain.ActionEditTasks); err != nil {
 		return err
 	}
-	return s.tasks.Delete(ctx, taskID)
+	var logged domain.ActivityEntry
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		task, err := s.tasks.GetForUpdate(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		loc, err := s.boards.ColumnLocation(ctx, task.ColumnID)
+		if err != nil {
+			return fmt.Errorf("locate column: %w", err)
+		}
+		if err := s.tasks.Delete(ctx, taskID); err != nil {
+			return err
+		}
+		logged, err = s.log(ctx, loc, acc.UserID, domain.ActivityTaskDeleted, domain.TaskDeletedPayload{
+			TaskID: task.ID, Title: task.Title, ColumnID: task.ColumnID, Version: task.Version,
+		})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	s.events.Publish(ctx, logged.Event())
+	return nil
 }
 
 // conflict builds the 409 error with the task's current state, or
@@ -491,9 +531,7 @@ func (s *Service) log(ctx context.Context, loc domain.Location, actorID domain.I
 	if !actorID.IsZero() {
 		actor = &actorID
 	}
-	entry, err := s.activity.Append(ctx, domain.NewActivity{
-		WorkspaceID: loc.WorkspaceID, BoardID: loc.BoardID, ActorID: actor, Type: typ, Payload: data,
-	})
+	entry, err := s.activity.Append(ctx, domain.NewActivity{BoardID: loc.BoardID, ActorID: actor, Type: typ, Payload: data})
 	if err != nil {
 		return domain.ActivityEntry{}, fmt.Errorf("activity: insert: %w", err)
 	}

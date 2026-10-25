@@ -39,12 +39,16 @@ type sseStream struct {
 	cancel context.CancelFunc
 }
 
-// openStream connects as `as`, authenticating with the access_token cookie.
-func (f *taskFixture) openStream(srv *httptest.Server, board uuid.UUID, as testUser) *sseStream {
+// openStream connects as `as`, authenticating with the access_token cookie;
+// query is appended to the URL and setup can add headers (Last-Event-ID…).
+func (f *taskFixture) openStream(srv *httptest.Server, board uuid.UUID, as testUser, opts ...func(*http.Request)) *sseStream {
 	f.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/boards/"+board.String()+"/events", nil)
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: as.Token})
+	for _, o := range opts {
+		o(req)
+	}
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		cancel()
@@ -88,7 +92,7 @@ func (s *sseStream) next(t *testing.T, timeout time.Duration) string {
 }
 
 // parseEvent splits an SSE message into its id, event and decoded data.
-func parseEvent(t *testing.T, frame string) (id, typ string, data streamEvent) {
+func parseEvent(t *testing.T, frame string) (id string, typ domain.EventType, data streamEvent) {
 	t.Helper()
 	for line := range strings.SplitSeq(frame, "\n") {
 		k, v, _ := strings.Cut(line, ": ")
@@ -96,7 +100,7 @@ func parseEvent(t *testing.T, frame string) (id, typ string, data streamEvent) {
 		case "id":
 			id = v
 		case "event":
-			typ = v
+			typ = domain.EventType(v)
 		case "data":
 			if err := json.Unmarshal([]byte(v), &data); err != nil {
 				t.Fatalf("data %q: %v", v, err)
@@ -144,19 +148,19 @@ func TestEventStreamDeliversBoardChanges(t *testing.T) {
 	id, typ, data := parseEvent(t, s.next(t, 2*time.Second))
 	var payload domain.TaskCreatedPayload
 	_ = json.Unmarshal(data.Payload, &payload)
-	if typ != domain.ActivityTaskCreated || id == "" || id != jsonNumber(data.ID) || data.BoardID != f.board ||
+	if typ != domain.EventTaskCreated || id == "" || id != jsonNumber(data.ID) || data.BoardID != f.board ||
 		data.ActorID == nil || *data.ActorID != f.ana.ID || payload.TaskID != domain.ID(created.ID) || payload.Title != "aquí" {
 		t.Errorf("event = id %s, %s, %+v, payload %+v", id, typ, data, payload)
 	}
 
 	f.patchOK(created.ID, map[string]any{"priority": "high", "version": 1}, f.beto)
-	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.ActivityTaskUpdated {
+	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.EventTaskUpdated {
 		t.Errorf("second event = %s", typ)
 	}
 	if rec := f.move(created.ID, map[string]any{"columnId": f.doing, "version": 2}, f.ana); rec.Code != http.StatusOK {
 		t.Fatalf("move: %d", rec.Code)
 	}
-	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.ActivityTaskMoved {
+	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.EventTaskMoved {
 		t.Errorf("third event = %s", typ)
 	}
 }
@@ -196,7 +200,7 @@ func TestEventStreamOutlivesTheServerWriteTimeout(t *testing.T) {
 	}
 	// Still delivering events well past the WriteTimeout.
 	f.createTask(f.todo, "tarde", f.ana)
-	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.ActivityTaskCreated {
+	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.EventTaskCreated {
 		t.Errorf("event after the timeout = %s", typ)
 	}
 }

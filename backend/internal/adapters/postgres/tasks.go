@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -135,12 +136,46 @@ func (r *Boards) LockBoardLabels(ctx context.Context, boardID domain.ID, ids []d
 
 // --- activity ---
 
+// Append writes an entry after taking the board's activity lock, which it
+// holds until the transaction ends: entries of a board commit in id order.
+// It must run inside a transaction, as the last write of the use case.
+// domain.ErrBoardNotFound if the board is gone.
 func (r *Activity) Append(ctx context.Context, a domain.NewActivity) (domain.ActivityEntry, error) {
-	row, err := r.q(ctx).InsertActivity(ctx, db.InsertActivityParams{
-		WorkspaceID: uuid.UUID(a.WorkspaceID), BoardID: uuid.UUID(a.BoardID), ActorID: nullUUID(a.ActorID),
-		Type: a.Type, Payload: a.Payload,
+	q := r.q(ctx)
+	if err := q.LockBoardActivity(ctx, uuid.UUID(a.BoardID)); err != nil {
+		return domain.ActivityEntry{}, fmt.Errorf("lock board activity: %w", err)
+	}
+	row, err := q.InsertActivity(ctx, db.InsertActivityParams{
+		BoardID: uuid.UUID(a.BoardID), ActorID: nullUUID(a.ActorID), Type: a.Type, Payload: a.Payload,
 	})
-	return toActivity(row, ""), err
+	return toActivity(row, ""), notFound(err, domain.ErrBoardNotFound)
+}
+
+// ActivitySince returns up to limit entries of the board after afterID, oldest first.
+func (r *Activity) ActivitySince(ctx context.Context, boardID domain.ID, afterID int64, limit int) ([]domain.ActivityEntry, error) {
+	rows, err := r.q(ctx).ListBoardActivitySince(ctx, db.ListBoardActivitySinceParams{
+		BoardID: uuid.UUID(boardID), AfterID: afterID, RowLimit: int32(limit),
+	})
+	return mapAll(rows, func(a db.ActivityLog) domain.ActivityEntry { return toActivity(a, "") }), err
+}
+
+// LatestActivityID is the id of the board's newest entry, or 0.
+func (r *Activity) LatestActivityID(ctx context.Context, boardID domain.ID) (int64, error) {
+	return r.q(ctx).LatestBoardActivityID(ctx, uuid.UUID(boardID))
+}
+
+// ColumnPositions returns the position of every task in the column, in order.
+func (r *Tasks) ColumnPositions(ctx context.Context, columnID domain.ID) ([]domain.TaskPosition, error) {
+	rows, err := r.q(ctx).ListColumnTaskPositions(ctx, uuid.UUID(columnID))
+	return mapAll(rows, func(row db.ListColumnTaskPositionsRow) domain.TaskPosition {
+		return domain.TaskPosition{TaskID: domain.ID(row.ID), Position: row.Position}
+	}), err
+}
+
+// ColumnTaskIDs returns the ids of the tasks in the column.
+func (r *Boards) ColumnTaskIDs(ctx context.Context, columnID domain.ID) ([]domain.ID, error) {
+	ids, err := r.q(ctx).ListColumnTaskIDs(ctx, uuid.UUID(columnID))
+	return mapAll(ids, func(id uuid.UUID) domain.ID { return domain.ID(id) }), err
 }
 
 // --- helpers ---

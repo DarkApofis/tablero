@@ -9,28 +9,201 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
-type fakeSubscriber struct{ subscribed []domain.ID }
-
-func (f *fakeSubscriber) Subscribe(boardID domain.ID) (<-chan domain.Event, func()) {
-	f.subscribed = append(f.subscribed, boardID)
-	return make(chan domain.Event), func() {}
+type fakeSubscriber struct {
+	subscribed int
+	cancelled  int
 }
 
-func TestWatchRequiresRead(t *testing.T) {
-	subs := &fakeSubscriber{}
-	svc := board.NewStreamService(subs)
-	boardID := domain.NewID()
+func (f *fakeSubscriber) Subscribe(domain.ID) (<-chan domain.Event, func()) {
+	f.subscribed++
+	return make(chan domain.Event), func() { f.cancelled++ }
+}
 
-	for _, role := range []domain.Role{domain.RoleAdmin, domain.RoleMember, domain.RoleViewer} {
-		ch, cancel, err := svc.Watch(context.Background(), domain.Access{Role: role}, boardID)
-		if err != nil || ch == nil || cancel == nil {
-			t.Errorf("%s: Watch = %v", role, err)
+// memFeed is a board log with entries 1..n (ids may skip, like the real
+// log's, which is shared by every board).
+type memFeed struct{ entries []domain.ActivityEntry }
+
+func (m *memFeed) add(id int64, actor domain.ID) {
+	m.entries = append(m.entries, domain.ActivityEntry{ID: id, ActorID: &actor, Type: domain.ActivityTaskMoved, Payload: []byte(`{"version":3}`)})
+}
+
+func (m *memFeed) ActivitySince(_ context.Context, _ domain.ID, after int64, limit int) ([]domain.ActivityEntry, error) {
+	var out []domain.ActivityEntry
+	for _, e := range m.entries {
+		if e.ID > after && len(out) < limit {
+			out = append(out, e)
 		}
 	}
-	if _, _, err := svc.Watch(context.Background(), domain.Access{}, boardID); !errors.Is(err, domain.ErrForbidden) {
-		t.Errorf("no role: err = %v, want ErrForbidden", err)
+	return out, nil
+}
+
+func (m *memFeed) LatestActivityID(context.Context, domain.ID) (int64, error) {
+	if len(m.entries) == 0 {
+		return 0, nil
 	}
-	if len(subs.subscribed) != 3 || subs.subscribed[0] != boardID {
-		t.Errorf("subscriptions = %v; a forbidden Watch must not subscribe", subs.subscribed)
+	return m.entries[len(m.entries)-1].ID, nil
+}
+
+func ids(msgs []board.Message) []int64 {
+	var out []int64
+	for _, m := range msgs {
+		if m.Resync {
+			out = append(out, -m.ID) // negative marks a resync
+			continue
+		}
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+func pull(t *testing.T, st *board.Stream) []int64 {
+	t.Helper()
+	msgs, err := st.Pull(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids(msgs)
+}
+
+func equal(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestOpenRequiresReadAndSubscribesFirst(t *testing.T) {
+	subs, feed := &fakeSubscriber{}, &memFeed{}
+	svc := board.NewStreamService(subs, feed, 10)
+	ctx := context.Background()
+	if _, err := svc.Open(ctx, domain.Access{}, domain.NewID(), board.StreamOptions{}); !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("no role: err = %v", err)
+	}
+	if subs.subscribed != 0 {
+		t.Error("a forbidden Open subscribed")
+	}
+	st, err := svc.Open(ctx, domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{})
+	if err != nil || subs.subscribed != 1 {
+		t.Fatalf("viewer Open = %v, subscribed %d", err, subs.subscribed)
+	}
+	st.Close()
+	if subs.cancelled != 1 {
+		t.Error("Close did not cancel the subscription")
+	}
+}
+
+func TestFreshStreamStartsFromNow(t *testing.T) {
+	feed := &memFeed{}
+	actor := domain.NewID()
+	feed.add(1, actor)
+	feed.add(4, actor)
+	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{})
+
+	if got := pull(t, st); len(got) != 0 {
+		t.Errorf("fresh stream replayed %v", got)
+	}
+	feed.add(9, actor)
+	feed.add(12, actor)
+	if got := pull(t, st); !equal(got, []int64{9, 12}) {
+		t.Errorf("live = %v, want [9 12]", got)
+	}
+	// Woken again with nothing new (or for an event already sent): no duplicates.
+	if got := pull(t, st); len(got) != 0 {
+		t.Errorf("second pull = %v", got)
+	}
+}
+
+func TestReconnectReplaysWhatWasMissed(t *testing.T) {
+	feed := &memFeed{}
+	actor := domain.NewID()
+	for _, id := range []int64{3, 5, 8, 13} {
+		feed.add(id, actor)
+	}
+	last := int64(5)
+	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{LastEventID: &last})
+
+	if got := pull(t, st); !equal(got, []int64{8, 13}) {
+		t.Errorf("replay = %v, want [8 13]", got)
+	}
+	feed.add(21, actor)
+	if got := pull(t, st); !equal(got, []int64{21}) {
+		t.Errorf("then live = %v", got)
+	}
+}
+
+func TestTooLargeAGapAsksForAResync(t *testing.T) {
+	feed := &memFeed{}
+	actor := domain.NewID()
+	for id := int64(1); id <= 8; id++ {
+		feed.add(id, actor)
+	}
+	svc := board.NewStreamService(&fakeSubscriber{}, feed, 5)
+	viewer := domain.Access{Role: domain.RoleViewer}
+	ctx := context.Background()
+
+	last := int64(2) // 6 missed > limit 5
+	st, _ := svc.Open(ctx, viewer, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	if got := pull(t, st); !equal(got, []int64{-8}) {
+		t.Errorf("got %v, want a resync at 8", got)
+	}
+	feed.add(9, actor)
+	if got := pull(t, st); !equal(got, []int64{9}) {
+		t.Errorf("after the resync = %v, want [9]", got)
+	}
+
+	// Exactly the limit (5 missed: 5..9) still replays.
+	last = 4
+	st, _ = svc.Open(ctx, viewer, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	if got := pull(t, st); !equal(got, []int64{5, 6, 7, 8, 9}) {
+		t.Errorf("at the limit = %v, want [5 6 7 8 9]", got)
+	}
+
+	// An id from the future (another board, a reset database) cannot be trusted.
+	last = 1000
+	st, _ = svc.Open(ctx, viewer, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	if got := pull(t, st); !equal(got, []int64{-9}) {
+		t.Errorf("future id = %v, want a resync at 9", got)
+	}
+}
+
+func TestExcludeSelfSkipsOnlyTheCallersEvents(t *testing.T) {
+	feed := &memFeed{}
+	me, other := domain.NewID(), domain.NewID()
+	feed.add(1, me)
+	feed.add(2, other)
+	feed.add(3, me)
+	last := int64(0)
+	svc := board.NewStreamService(&fakeSubscriber{}, feed, 10)
+	ctx := context.Background()
+	acc := domain.Access{UserID: me, Role: domain.RoleMember}
+
+	st, _ := svc.Open(ctx, acc, domain.NewID(), board.StreamOptions{LastEventID: &last, ExcludeSelf: true})
+	if got := pull(t, st); !equal(got, []int64{2}) {
+		t.Errorf("exclude self = %v, want [2]", got)
+	}
+	feed.add(4, me)
+	if got := pull(t, st); len(got) != 0 {
+		t.Errorf("own live event sent: %v", got) // and not re-read on the next pull either
+	}
+
+	st, _ = svc.Open(ctx, acc, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	if got := pull(t, st); !equal(got, []int64{1, 2, 3, 4}) {
+		t.Errorf("without the option = %v", got)
+	}
+}
+
+func TestEventsCarryTheTaskVersion(t *testing.T) {
+	feed := &memFeed{}
+	feed.add(1, domain.NewID())
+	last := int64(0)
+	st, _ := board.NewStreamService(&fakeSubscriber{}, feed, 10).Open(context.Background(), domain.Access{Role: domain.RoleViewer}, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	msgs, _ := st.Pull(context.Background())
+	if len(msgs) != 1 || msgs[0].Event.Type != domain.EventTaskMoved || msgs[0].Event.TaskVersion == nil || *msgs[0].Event.TaskVersion != 3 {
+		t.Errorf("event = %+v", msgs)
 	}
 }

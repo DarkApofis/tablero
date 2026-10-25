@@ -15,27 +15,28 @@ import (
 
 const insertActivity = `-- name: InsertActivity :one
 INSERT INTO activity_log (workspace_id, board_id, actor_id, type, payload)
-VALUES ($1, $2, $3, $4, $5)
+SELECT b.workspace_id, b.id, $1, $2, $3
+FROM boards b
+WHERE b.id = $4
 RETURNING id, workspace_id, board_id, actor_id, type, payload, created_at
 `
 
 type InsertActivityParams struct {
-	WorkspaceID uuid.UUID
-	BoardID     uuid.UUID
-	ActorID     uuid.NullUUID
-	Type        string
-	Payload     []byte
+	ActorID uuid.NullUUID
+	Type    string
+	Payload []byte
+	BoardID uuid.UUID
 }
 
-// InsertActivity returns the entry so the use case can publish it as an
-// event once the transaction commits.
+// InsertActivity derives the workspace from the board and returns the entry,
+// so the use case can publish it once the transaction commits. No row: the
+// board was deleted.
 func (q *Queries) InsertActivity(ctx context.Context, arg InsertActivityParams) (ActivityLog, error) {
 	row := q.db.QueryRow(ctx, insertActivity,
-		arg.WorkspaceID,
-		arg.BoardID,
 		arg.ActorID,
 		arg.Type,
 		arg.Payload,
+		arg.BoardID,
 	)
 	var i ActivityLog
 	err := row.Scan(
@@ -48,6 +49,18 @@ func (q *Queries) InsertActivity(ctx context.Context, arg InsertActivityParams) 
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const latestBoardActivityID = `-- name: LatestBoardActivityID :one
+SELECT COALESCE(max(id), 0)::bigint FROM activity_log
+WHERE board_id = $1
+`
+
+func (q *Queries) LatestBoardActivityID(ctx context.Context, boardID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, latestBoardActivityID, boardID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const listBoardActivity = `-- name: ListBoardActivity :many
@@ -101,4 +114,61 @@ func (q *Queries) ListBoardActivity(ctx context.Context, arg ListBoardActivityPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const listBoardActivitySince = `-- name: ListBoardActivitySince :many
+SELECT id, workspace_id, board_id, actor_id, type, payload, created_at FROM activity_log
+WHERE board_id = $1 AND id > $2
+ORDER BY id
+LIMIT $3
+`
+
+type ListBoardActivitySinceParams struct {
+	BoardID  uuid.UUID
+	AfterID  int64
+	RowLimit int32
+}
+
+// ListBoardActivitySince returns the entries after after_id, oldest first:
+// what an event stream has not sent yet.
+func (q *Queries) ListBoardActivitySince(ctx context.Context, arg ListBoardActivitySinceParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, listBoardActivitySince, arg.BoardID, arg.AfterID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActivityLog
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.BoardID,
+			&i.ActorID,
+			&i.Type,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockBoardActivity = `-- name: LockBoardActivity :exec
+SELECT pg_advisory_xact_lock(hashtextextended('activity_log:' || CAST($1 AS uuid)::text, 0))
+`
+
+// LockBoardActivity serializes, per board, the last step of every write:
+// appending to the log. It is held until the transaction ends, so a board's
+// entries commit in id order, and "everything after id N" never misses an
+// entry that commits later with a smaller id. Take it last, right before
+// InsertActivity, and do nothing but insert and read after it.
+func (q *Queries) LockBoardActivity(ctx context.Context, boardID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockBoardActivity, boardID)
+	return err
 }

@@ -198,6 +198,37 @@ func (q *Queries) LastTaskPosition(ctx context.Context, arg LastTaskPositionPara
 	return position, err
 }
 
+const listColumnTaskPositions = `-- name: ListColumnTaskPositions :many
+SELECT id, position FROM tasks
+WHERE column_id = $1
+ORDER BY position, id
+`
+
+type ListColumnTaskPositionsRow struct {
+	ID       uuid.UUID
+	Position float64
+}
+
+func (q *Queries) ListColumnTaskPositions(ctx context.Context, columnID uuid.UUID) ([]ListColumnTaskPositionsRow, error) {
+	rows, err := q.db.Query(ctx, listColumnTaskPositions, columnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListColumnTaskPositionsRow
+	for rows.Next() {
+		var i ListColumnTaskPositionsRow
+		if err := rows.Scan(&i.ID, &i.Position); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasksByBoard = `-- name: ListTasksByBoard :many
 SELECT t.id, t.column_id, t.title, t.description, t.position, t.version, t.created_by, t.created_at, t.updated_at, t.priority, t.due_date, t.assignee_id, t.archived_at, u.name AS assignee_name
 FROM tasks t

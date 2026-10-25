@@ -8,6 +8,13 @@ SELECT * FROM labels
 WHERE board_id = $1
 ORDER BY name, id;
 
+-- GetLabelForUpdate reads a label to change it. NO KEY UPDATE: assigning it to
+-- a task (FilterBoardLabels, FOR KEY SHARE) is still allowed meanwhile.
+-- name: GetLabelForUpdate :one
+SELECT * FROM labels
+WHERE id = $1
+FOR NO KEY UPDATE;
+
 -- name: GetLabelWorkspaceID :one
 SELECT b.workspace_id
 FROM labels l

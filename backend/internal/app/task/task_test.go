@@ -211,7 +211,7 @@ func TestCreateLogsInTheTransactionAndPublishesAfter(t *testing.T) {
 		p.TaskID != created.ID || p.Priority != domain.PriorityUrgent || *p.AssigneeID != e.beto || len(p.LabelIDs) != 1 {
 		t.Errorf("entry = %+v, payload = %+v", entry, p)
 	}
-	if ev.ActivityID != entry.ID || ev.Type != entry.Type || ev.BoardID != e.board {
+	if ev.ID != entry.ID || ev.Type != domain.EventTaskCreated || ev.BoardID != e.board || ev.TaskVersion == nil || *ev.TaskVersion != 1 {
 		t.Errorf("event = %+v", ev)
 	}
 	if second := e.create("Otra"); second.Position != 2048 {

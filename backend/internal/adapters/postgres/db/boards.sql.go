@@ -111,11 +111,14 @@ func (q *Queries) ListBoardsByWorkspace(ctx context.Context, workspaceID uuid.UU
 const lockBoard = `-- name: LockBoard :exec
 SELECT id FROM boards
 WHERE id = $1
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 // LockBoard serializes position changes inside one board so two moves
-// cannot compute the same midpoint.
+// cannot compute the same midpoint. NO KEY UPDATE, not UPDATE: it must not
+// block the KEY SHARE that inserting into activity_log takes on the board
+// (a writer holding LockBoardActivity would wait for it, while this one
+// waits for that writer's column lock: a deadlock).
 func (q *Queries) LockBoard(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, lockBoard, id)
 	return err
