@@ -25,4 +25,7 @@ COPY migrations ./migrations
 USER nonroot:nonroot
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=4s --start-period=5s --retries=3 CMD ["/app/healthcheck", "http://localhost:8080/ready"]
-ENTRYPOINT ["/app/api"]
+# CMD, not ENTRYPOINT: a platform's command override (Render's
+# preDeployCommand "/app/migrate", Compose's entrypoint) then runs the other
+# binaries directly. There is no shell to wrap them in.
+CMD ["/app/api"]

@@ -1,0 +1,76 @@
+# Render Blueprint: the API (Docker image from backend/) and its managed
+# Postgres, both in Frankfurt. The frontend is deployed separately.
+# Step-by-step guide, variables and migration strategy: docs/DEPLOY.md.
+
+databases:
+  - name: tablero-db
+    region: frankfurt
+    # Paid: a free Render Postgres expires after a few weeks.
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16" # the version Compose and CI use
+    databaseName: tablero
+    user: tablero
+    # No access from the internet: only services on Render's private network.
+    ipAllowList: []
+
+services:
+  - type: web
+    name: tablero-api
+    runtime: docker
+    region: frankfurt
+    # Paid: the free plan sleeps after 15 minutes without requests, which
+    # would close every open SSE stream and make the next visitor wait.
+    plan: 0.5c-512mb
+    # One instance: live events go through its memory (EVENTS_BACKEND).
+    # For more, switch EVENTS_BACKEND to postgres first (docs/DEPLOY.md).
+    numInstances: 1
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    # Applies pending migrations on a separate instance, after the build and
+    # before the new version starts, while the old one keeps serving: they
+    # must be backward compatible (docs/DEPLOY.md). If it fails, the deploy
+    # stops and the old version stays.
+    preDeployCommand: /app/migrate
+    # Liveness, not /ready: the API only starts listening once it has reached
+    # the database, and a database blip must not get it restarted.
+    healthCheckPath: /health
+    # SIGTERM → SIGKILL. The API drains in SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT
+    # (5s + 20s), below this.
+    maxShutdownDelaySeconds: 30
+    # Deploy a commit only once CI passes on it.
+    autoDeployTrigger: checksPass
+    buildFilter:
+      paths:
+        - backend/**
+        - render.yaml
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tablero-db
+          property: connectionString # private network URL
+      - key: JWT_SECRET
+        generateValue: true # 256 random bits, generated once
+      - key: CORS_ORIGINS
+        sync: false # asked when the Blueprint is created: https://app.<your domain>
+      - key: PORT
+        value: "8080"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAMESITE
+        value: lax # app.<domain> and api.<domain> are the same site
+      - key: TRUST_PROXY
+        value: "true" # behind Render's proxy (verify it: docs/DEPLOY.md, step 5)
+      - key: EVENTS_BACKEND
+        value: memory
+      - key: SHUTDOWN_DELAY
+        value: 5s
+      - key: SHUTDOWN_TIMEOUT
+        value: 20s
+      - key: MIGRATE_LOCK_TIMEOUT
+        value: 5s
+      - key: RATE_LIMIT
+        value: "true"
+      - key: DEMO_MODE
+        value: "false"
+      - key: GOMEMLIMIT
+        value: 400MiB # leaves room in the 512 MB instance before the OOM killer

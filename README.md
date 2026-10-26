@@ -275,6 +275,11 @@ cd backend && go run ./cmd/loadtest -url http://localhost:8080 -clients 500 -dur
 Todos los clientes de la prueba son el mismo usuario: levanta la API con
 `SSE_MAX_PER_USER=1000` para que el límite de streams por usuario no la corte.
 
+## Despliegue
+
+El backend se despliega en Render con Postgres administrado (`render.yaml`). Las variables,
+la estrategia de migraciones y el paso a paso están en [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
 ## Seguridad
 
 El modelo de amenazas, las defensas (rate limiting, CSRF, cabeceras, cookies, límites) y
