@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,14 @@ type Config struct {
 	AccessTokenTTL  time.Duration // ACCESS_TOKEN_TTL, default 15m
 	RefreshTokenTTL time.Duration // REFRESH_TOKEN_TTL, default 720h (30 days)
 	CookieSecure    bool          // COOKIE_SECURE, default true
+	// On SIGTERM the API first answers GET /ready with 503 and keeps serving
+	// for ShutdownDelay (SHUTDOWN_DELAY, default 0s), so a load balancer stops
+	// sending it traffic and connections already queued get served. Then it
+	// stops accepting and gives the requests in flight ShutdownTimeout
+	// (SHUTDOWN_TIMEOUT, default 15s). Keep both together under the
+	// orchestrator's grace period (compose: stop_grace_period).
+	ShutdownDelay   time.Duration
+	ShutdownTimeout time.Duration
 	// EventsBackend is EVENTS_BACKEND: "memory" (default, one instance) or
 	// "postgres" (LISTEN/NOTIFY, for several instances on one database).
 	EventsBackend string
@@ -43,11 +52,25 @@ func Load() (Config, error) {
 	if cfg.EventsBackend != EventsMemory && cfg.EventsBackend != EventsPostgres {
 		errs = append(errs, fmt.Errorf("EVENTS_BACKEND must be %s or %s", EventsMemory, EventsPostgres))
 	}
+	if n, err := strconv.Atoi(cfg.Port); err != nil || n < 1 || n > 65535 {
+		errs = append(errs, fmt.Errorf("PORT must be a port number (1-65535), got %q", cfg.Port))
+	}
 	if cfg.DatabaseURL == "" {
-		errs = append(errs, errors.New("DATABASE_URL is required"))
+		errs = append(errs, errors.New("DATABASE_URL is required, e.g. postgres://user:pass@host:5432/tablero?sslmode=disable"))
+	} else if u, err := url.Parse(cfg.DatabaseURL); err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" {
+		// The value is not echoed: it carries the password.
+		errs = append(errs, errors.New("DATABASE_URL must be a postgres://user:pass@host:port/db URL"))
+	}
+	if len(cfg.CORSOrigins) == 0 {
+		errs = append(errs, errors.New("CORS_ORIGINS must name at least one origin"))
+	}
+	for _, o := range cfg.CORSOrigins {
+		if u, err := url.Parse(o); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.TrimSuffix(u.Path, "/") != "" {
+			errs = append(errs, fmt.Errorf("CORS_ORIGINS: %q is not an origin like https://tablero.example.com", o))
+		}
 	}
 	if len(cfg.JWTSecret) < minJWTSecretLen {
-		errs = append(errs, fmt.Errorf("JWT_SECRET is required and must be at least %d bytes", minJWTSecretLen))
+		errs = append(errs, fmt.Errorf("JWT_SECRET is required and must be at least %d bytes (e.g. openssl rand -hex 32)", minJWTSecretLen))
 	}
 
 	var err error
@@ -60,11 +83,31 @@ func Load() (Config, error) {
 	if cfg.CookieSecure, err = getBool("COOKIE_SECURE", true); err != nil {
 		errs = append(errs, err)
 	}
+	if cfg.ShutdownDelay, err = getNonNegativeDuration("SHUTDOWN_DELAY", 0); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.ShutdownTimeout, err = getDuration("SHUTDOWN_TIMEOUT", 15*time.Second); err != nil {
+		errs = append(errs, err)
+	}
 
 	if len(errs) > 0 {
-		return Config{}, errors.Join(errs...)
+		return Config{}, &Error{Problems: errs}
 	}
 	return cfg, nil
+}
+
+// Error lists every problem found in the environment at once, so a deploy is
+// fixed in one go rather than one variable per restart.
+type Error struct {
+	Problems []error
+}
+
+func (e *Error) Error() string {
+	lines := make([]string, len(e.Problems))
+	for i, p := range e.Problems {
+		lines[i] = "  - " + p.Error()
+	}
+	return "invalid configuration:\n" + strings.Join(lines, "\n")
 }
 
 func getenv(key, fallback string) string {
@@ -82,6 +125,18 @@ func getDuration(key string, fallback time.Duration) (time.Duration, error) {
 	d, err := time.ParseDuration(v)
 	if err != nil || d <= 0 {
 		return 0, fmt.Errorf("%s must be a positive duration like 15m or 720h", key)
+	}
+	return d, nil
+}
+
+func getNonNegativeDuration(key string, fallback time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("%s must be a duration like 0s or 5s", key)
 	}
 	return d, nil
 }

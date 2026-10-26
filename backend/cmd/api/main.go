@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -36,6 +38,17 @@ func main() {
 	slog.SetDefault(logger)
 
 	if err := run(); err != nil {
+		// A bad environment is not a crash: say what to fix, all of it, and stop
+		// before touching the database.
+		var cfgErr *config.Error
+		if errors.As(err, &cfgErr) {
+			problems := make([]string, len(cfgErr.Problems))
+			for i, p := range cfgErr.Problems {
+				problems[i] = p.Error()
+			}
+			slog.Error("invalid configuration, not starting", "problems", problems)
+			os.Exit(2)
+		}
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
@@ -52,7 +65,7 @@ func run() error {
 
 	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot reach the database at DATABASE_URL, not starting: %w", err)
 	}
 	defer pool.Close()
 	slog.Info("database connected")
@@ -66,7 +79,11 @@ func run() error {
 	if cfg.EventsBackend == config.EventsPostgres {
 		bus := postgres.NewEventBus(pool, cfg.DatabaseURL, hub, postgres.EventBusOptions{})
 		publisher = bus
-		go func() { _ = bus.Run(ctx) }() // ends with ctx, on shutdown
+		// Not on ctx: the requests still served after SIGTERM (the delay, then
+		// those in flight) must reach the other instances. Ends once they are done.
+		busCtx, stopBus := context.WithCancel(context.Background())
+		defer stopBus()
+		go func() { _ = bus.Run(busCtx) }()
 		slog.Info("events over postgres LISTEN/NOTIFY", "instance", bus.Instance())
 	}
 
@@ -91,12 +108,14 @@ func run() error {
 		return err
 	}
 
+	var shuttingDown atomic.Bool
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: httpapi.NewRouter(httpapi.Deps{
 			CORSOrigins:  cfg.CORSOrigins,
 			CookieSecure: cfg.CookieSecure,
-			Health:       pool,
+			Ready:        pool,
+			ShuttingDown: &shuttingDown,
 			Auth:         authService,
 			Authorizer:   workspace.NewAuthorizer(workspaces),
 			Workspaces:   workspace.NewService(workspaces, tx, publisher),
@@ -130,12 +149,21 @@ func run() error {
 		return err
 	case <-ctx.Done():
 	}
+	stop() // a second signal now kills the process at once
 
-	slog.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shuttingDown.Store(true)
+	if cfg.ShutdownDelay > 0 {
+		slog.Info("shutting down: /ready answers 503, still serving", "delay", cfg.ShutdownDelay.String())
+		time.Sleep(cfg.ShutdownDelay)
+	}
+	// Shutdown closes the listener, so no new requests come in, and waits for
+	// the ones in flight; the event streams end through hub.Close.
+	slog.Info("shutting down, finishing requests in flight", "timeout", cfg.ShutdownTimeout.String())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return err
+		_ = srv.Close()
+		return fmt.Errorf("requests still open after %s, closed: %w", cfg.ShutdownTimeout, err)
 	}
 	slog.Info("server stopped")
 	return nil

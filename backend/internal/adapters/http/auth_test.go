@@ -119,7 +119,7 @@ func newAuthEnv() authEnv {
 		tokens: tokens,
 		router: NewRouter(Deps{
 			CookieSecure: true,
-			Health:       fakePinger{},
+			Ready:        fakePinger{},
 			Auth:         newAuthService(store, tokens, 30*24*time.Hour),
 		}),
 	}

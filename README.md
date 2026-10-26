@@ -29,7 +29,27 @@ con concurrencia optimista y orden por posición fraccionaria.
   ```
 - `make` es opcional: cada target del `Makefile` es un comando que puedes ejecutar a mano.
 
-## Levantar el proyecto
+## Todo con Docker
+
+```sh
+docker compose up --build        # o: docker compose up -d --build --wait
+```
+
+Levanta, en orden y cada uno esperando al anterior:
+
+1. **db**: Postgres 16 (healthcheck con `pg_isready`).
+2. **migrate**: aplica `backend/migrations` con goose y termina. La API no arranca si
+   falla (`service_completed_successfully`).
+3. **api**: la API, cuando `/ready` responde (healthcheck).
+4. **web**: el frontend (servidor standalone de Next.js) en http://localhost:3000.
+
+Las imágenes son multi-stage. La API es un binario estático sobre distroless (sin shell, usuario
+`nonroot`) y el frontend corre con el usuario `node`. Los puertos del host se cambian con
+`DB_PORT`, `API_PORT` y `WEB_PORT`; Compose también lee el `.env` de la raíz, así que su
+`CORS_ORIGINS` y su `JWT_SECRET` se aplican al contenedor de la API.
+`docker compose down` apaga la API sin cortar peticiones (ver *Salud y apagado*).
+
+## Levantar el proyecto para desarrollar
 
 ### 1. Configuración
 
@@ -38,7 +58,10 @@ cp .env.example .env
 ```
 
 Cambia `JWT_SECRET` por un valor aleatorio de al menos 32 bytes
-(`openssl rand -base64 48`). Variables disponibles:
+(`openssl rand -base64 48`). La API valida todo al arrancar: si falta una variable
+obligatoria o alguna no es válida, termina con código 2 y una lista de todos los problemas
+(sin repetir valores secretos), y si la base no responde, termina sin abrir el puerto.
+Variables disponibles:
 
 | Variable | Por defecto | |
 |---|---|---|
@@ -49,12 +72,14 @@ Cambia `JWT_SECRET` por un valor aleatorio de al menos 32 bytes
 | `ACCESS_TOKEN_TTL` | `15m` | Vida del access token |
 | `REFRESH_TOKEN_TTL` | `720h` | Vida del refresh token |
 | `COOKIE_SECURE` | `true` | `Secure` en la cookie del refresh token (funciona en `http://localhost`) |
+| `SHUTDOWN_DELAY` | `0s` | Al recibir SIGTERM, cuánto sigue atendiendo con `/ready` en 503 antes de dejar de aceptar conexiones |
+| `SHUTDOWN_TIMEOUT` | `15s` | Después, cuánto esperan las peticiones en curso antes de cerrarse |
 | `EVENTS_BACKEND` | `memory` | `memory` para una instancia; `postgres` para varias instancias sobre la misma base (eventos y presencia por `LISTEN/NOTIFY`, [decisión 8](docs/DECISIONS.md)) |
 
 ### 2. Base de datos
 
 ```sh
-docker compose up -d --wait      # Postgres 16 en localhost:5432
+docker compose up -d --wait db   # solo Postgres 16, en localhost:5432
 make migrate-up                  # o: goose -dir backend/migrations postgres "$DATABASE_URL" up
 ```
 
@@ -76,7 +101,20 @@ Get-Content .env | Where-Object { $_ -match '^([A-Z_]+)=(.*)$' } | ForEach-Objec
 cd backend; go run ./cmd/api
 ```
 
-Comprueba que responde: `curl http://localhost:8080/health` → `{"status":"ok"}`.
+Comprueba que responde: `curl http://localhost:8080/ready` → `{"status":"ok"}`.
+
+### Salud y apagado
+
+- `GET /health` es *liveness*: el proceso está vivo. No consulta la base, así que una
+  caída de Postgres no hace reiniciar una API sana.
+- `GET /ready` es *readiness*: la base responde y la API no se está apagando. Si no,
+  responde 503 (`db_unavailable` o `shutting_down`).
+
+Con SIGTERM, `/ready` pasa a 503 y la API sigue atendiendo `SHUTDOWN_DELAY`, para que el
+balanceador deje de enviarle tráfico y entren las conexiones ya encoladas. Después deja de
+aceptar conexiones y espera hasta `SHUTDOWN_TIMEOUT` a las peticiones en curso; los
+streams de eventos se cierran y los clientes se reconectan. En Compose son 3 s + 15 s,
+dentro de `stop_grace_period: 20s`. Una segunda señal la termina en el acto.
 
 ### 4. Frontend
 
@@ -117,18 +155,19 @@ pnpm test:e2e      # Playwright contra la API real (abajo)
 
 Los e2e abren dos o tres navegadores con personas distintas en el mismo tablero
 (mover una tarjeta en vivo, edición simultánea con conflicto, viewer sin arrastre).
-Necesitan la API levantada con Docker Compose (perfil `app`: Postgres, migraciones
-y API construida desde el código):
+Corren contra la aplicación levantada con Docker Compose:
 
 ```sh
-docker compose --profile app up -d --build --wait
+docker compose up -d --build --wait
 cd frontend && pnpm exec playwright install chromium && pnpm test:e2e
 ```
 
-Playwright construye y sirve el frontend en el puerto 3000 y crea usuarios y un
-workspace «E2E …» en la base. Si el 8080 está ocupado:
-`API_PORT=8090 docker compose --profile app up -d --build --wait` y
-`E2E_API_URL=http://localhost:8090 pnpm test:e2e`.
+Usan el frontend que ya responde en el puerto 3000 (el contenedor `web`); si no hay
+ninguno, Playwright construye y sirve el del código. Crean usuarios y un workspace
+«E2E …» en la base. Con otros puertos:
+`API_PORT=8090 WEB_PORT=3100 CORS_ORIGINS=http://localhost:3100 docker compose up -d --build --wait`
+y `E2E_API_URL=http://localhost:8090 E2E_PORT=3100 pnpm test:e2e` (más
+`E2E_DATABASE_URL` si cambias `DB_PORT`).
 
 Lint: `golangci-lint run ./...` en `backend/` (incluye `depguard`, que impide que
 `domain` o `app` importen adaptadores) y `pnpm lint` en `frontend/`.
@@ -147,7 +186,7 @@ a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/adapters/p
 
 - **Backend:** `go vet`, `golangci-lint` (con las reglas de dependencias de la arquitectura), tests (con Postgres como servicio) y build.
 - **Frontend:** `pnpm lint`, `pnpm test` y `pnpm build`.
-- **E2E:** levanta el backend con `docker compose --profile app` y corre `pnpm test:e2e`; si falla, sube el informe de Playwright y los logs de la API.
+- **E2E:** levanta toda la aplicación con `docker compose up --build --wait` (las imágenes de la API y del frontend), corre `pnpm test:e2e` contra ella y la para con `docker compose stop`, comprobando que la API termina con código 0. Si falla, sube el informe de Playwright y los logs.
 
 ## Estado
 

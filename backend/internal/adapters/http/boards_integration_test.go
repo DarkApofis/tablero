@@ -73,7 +73,7 @@ func instanceDeps(pool *pgxpool.Pool, tokens *token.Issuer, hub *events.Hub, pub
 	activity := postgres.NewActivity(pool)
 	workspaces := postgres.NewWorkspaces(pool)
 	return Deps{
-		Health:     pool,
+		Ready:      pool,
 		Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
 		Authorizer: workspace.NewAuthorizer(workspaces),
 		Workspaces: workspace.NewService(workspaces, txm, pub),

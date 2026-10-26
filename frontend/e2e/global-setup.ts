@@ -57,7 +57,7 @@ async function waitForApi() {
       // not up yet
     }
     if (Date.now() > deadline) {
-      throw new Error(`The API at ${API_URL} is not answering. Start it with: docker compose --profile app up -d --build --wait`);
+      throw new Error(`The API at ${API_URL} is not answering. Start it with: docker compose up -d --build --wait`);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }

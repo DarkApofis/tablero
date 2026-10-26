@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/DarkApofis/tablero/backend/internal/adapters/metrics"
@@ -15,7 +16,10 @@ import (
 type Deps struct {
 	CORSOrigins  []string
 	CookieSecure bool
-	Health       Pinger
+	// Ready is what GET /ready checks: the database. Once ShuttingDown is
+	// set (on SIGTERM), /ready answers 503 whatever the database says.
+	Ready        Pinger
+	ShuttingDown *atomic.Bool
 	Auth         *appauth.Service
 	Authorizer   *workspace.Authorizer
 	Workspaces   *workspace.Service
@@ -41,7 +45,8 @@ func NewRouter(d Deps) http.Handler {
 		d.Metrics = metrics.NewRegistry()
 	}
 
-	mux.HandleFunc("GET /health", handleHealth(d.Health))
+	mux.HandleFunc("GET /health", handleHealth)
+	mux.HandleFunc("GET /ready", handleReady(d.Ready, d.ShuttingDown))
 	mux.Handle("GET /metrics", d.Metrics.Handler())
 
 	ah := &authHandler{auth: d.Auth, cookieSecure: d.CookieSecure}

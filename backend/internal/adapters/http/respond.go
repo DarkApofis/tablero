@@ -14,6 +14,7 @@ const (
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeInternal         = "internal_error"
 	CodeDBUnavailable    = "db_unavailable"
+	CodeShuttingDown     = "shutting_down"
 	CodeInvalidJSON      = "invalid_json"
 	CodeValidation       = "validation_error"
 	CodeInvalidCreds     = "invalid_credentials"

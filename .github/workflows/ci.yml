@@ -107,11 +107,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Postgres, the migrations and the API, built from this commit
-      # (the "app" profile of docker-compose.yml).
-      - name: Start the backend
+      # Postgres, the migrations, the API and the frontend, built from this
+      # commit: the images the tests run against.
+      - name: Start the app
         working-directory: .
-        run: docker compose --profile app up -d --build --wait
+        run: docker compose up -d --build --wait
 
       - uses: pnpm/action-setup@v4
         with:
@@ -129,10 +129,19 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
 
-      # Builds and serves the frontend on :3000 against the API on :8080
-      # (playwright.config.ts), seeds three users and runs the scenarios.
+      # Against the web container on :3000 and the API on :8080
+      # (playwright.config.ts); seeds three users and runs the scenarios.
       - name: E2E tests
         run: pnpm test:e2e
+
+      # SIGTERM: the API drains and exits 0 (not killed at the grace period).
+      - name: Graceful stop
+        working-directory: .
+        run: |
+          docker compose stop
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose ps -aq api)")
+          echo "api exit code: $code"
+          test "$code" = 0
 
       - name: Playwright report
         if: failure()
@@ -142,7 +151,7 @@ jobs:
           path: frontend/playwright-report
           retention-days: 7
 
-      - name: Backend logs
+      - name: Container logs
         if: failure()
         working-directory: .
-        run: docker compose --profile app logs migrate api
+        run: docker compose logs migrate api web

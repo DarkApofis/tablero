@@ -152,7 +152,7 @@ func newWSEnv(t *testing.T) *wsEnv {
 	return &wsEnv{
 		t: t, tokens: tokens, users: users, store: store, svc: svc,
 		router: NewRouter(Deps{
-			Health:     fakePinger{},
+			Ready:      fakePinger{},
 			Auth:       newAuthService(users, tokens, time.Hour),
 			Authorizer: workspace.NewAuthorizer(store),
 			Workspaces: svc,

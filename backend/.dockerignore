@@ -2,3 +2,6 @@ bin/
 *.exe
 *.test
 *.out
+Dockerfile
+.dockerignore
+.golangci.yml

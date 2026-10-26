@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func (f fakePinger) Ping(context.Context) error { return f.err }
 func newTestRouter(pingErr error) http.Handler {
 	return NewRouter(Deps{
 		CORSOrigins: []string{"http://localhost:3000"},
-		Health:      fakePinger{err: pingErr},
+		Ready:       fakePinger{err: pingErr},
 		Auth:        newAuthService(newFakeStore(), token.NewIssuer(testSecret, 15*time.Minute), time.Hour),
 	})
 }
@@ -33,10 +34,26 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder) errorDetail {
 	return body.Error
 }
 
-func TestHealth(t *testing.T) {
+func TestHealthIsLivenessOnly(t *testing.T) {
+	// The database is down, but the process is alive: nothing to restart.
+	rec := httptest.NewRecorder()
+	newTestRouter(errors.New("boom")).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Errorf("body = %q", got)
+	}
+	if rec.Header().Get(requestIDHeader) == "" {
+		t.Error("missing X-Request-ID response header")
+	}
+}
+
+func TestReady(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		newTestRouter(nil).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+		newTestRouter(nil).ServeHTTP(rec, httptest.NewRequest("GET", "/ready", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
@@ -44,20 +61,38 @@ func TestHealth(t *testing.T) {
 		if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
 			t.Errorf("body = %q", got)
 		}
-		if rec.Header().Get(requestIDHeader) == "" {
-			t.Error("missing X-Request-ID response header")
-		}
 	})
 
 	t.Run("db down returns 503", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		newTestRouter(errors.New("boom")).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+		newTestRouter(errors.New("boom")).ServeHTTP(rec, httptest.NewRequest("GET", "/ready", nil))
 
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want 503", rec.Code)
 		}
 		if e := decodeError(t, rec); e.Code != CodeDBUnavailable || e.Message == "" {
 			t.Errorf("error = %+v", e)
+		}
+	})
+
+	t.Run("shutting down returns 503 with the database fine", func(t *testing.T) {
+		var shuttingDown atomic.Bool
+		router := NewRouter(Deps{Ready: fakePinger{}, ShuttingDown: &shuttingDown})
+		shuttingDown.Store(true)
+
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest("GET", "/ready", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+		if e := decodeError(t, rec); e.Code != CodeShuttingDown {
+			t.Errorf("error = %+v", e)
+		}
+		// Still alive, and still serving while it drains.
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("/health = %d, want 200", rec.Code)
 		}
 	})
 }

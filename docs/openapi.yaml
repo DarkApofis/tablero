@@ -54,7 +54,7 @@ servers:
 
 tags:
   - name: health
-    description: Estado del servicio.
+    description: Estado del servicio (liveness y readiness).
   - name: auth
     description: Registro, login y usuario actual.
   - name: workspaces
@@ -83,12 +83,32 @@ paths:
   /health:
     get:
       tags: [health]
-      summary: Estado del servicio y de la base de datos
+      summary: "Liveness: el proceso está vivo y atiende"
+      description: |
+        No consulta la base de datos: una caída de Postgres no debe hacer que se
+        reinicie una API sana. Para saber si puede atender tráfico, `GET /ready`.
       operationId: getHealth
       security: []
       responses:
         "200":
-          description: El servicio y la base de datos responden.
+          description: El proceso responde.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /ready:
+    get:
+      tags: [health]
+      summary: "Readiness: la API puede atender, con la base de datos disponible"
+      operationId: getReady
+      security: []
+      responses:
+        "200":
+          description: La base de datos responde.
           content:
             application/json:
               schema:
@@ -97,7 +117,10 @@ paths:
                 properties:
                   status: { type: string, const: ok }
         "503":
-          description: La base de datos no responde (`db_unavailable`).
+          description: |
+            La base de datos no responde (`db_unavailable`), o la API recibió SIGTERM y se
+            está apagando (`shutting_down`): sigue atendiendo `SHUTDOWN_DELAY` para que el
+            balanceador deje de enviarle tráfico.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1183,6 +1206,7 @@ components:
         - neighbors_changed
         - method_not_allowed
         - db_unavailable
+        - shutting_down
         - internal_error
 
     TaskConflict:

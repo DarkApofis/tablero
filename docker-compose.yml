@@ -1,3 +1,10 @@
+# The whole app: `docker compose up --build` (add -d --wait to return once it's healthy).
+# Postgres → migrations (run once, then exit) → API → frontend, each one waiting
+# for the previous to be healthy or done. For `go run`/`pnpm dev` on the host,
+# start only the database: `docker compose up -d db`.
+#
+# Host ports: DB_PORT (5432), API_PORT (8080), WEB_PORT (3000).
+
 services:
   db:
     image: postgres:16-alpine
@@ -7,7 +14,7 @@ services:
       POSTGRES_PASSWORD: tablero
       POSTGRES_DB: tablero
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -16,14 +23,13 @@ services:
       timeout: 3s
       retries: 10
 
-  # The API in a container, for the end-to-end tests and CI:
-  #   docker compose --profile app up -d --build --wait
-  # Plain `docker compose up` still starts only the database, for `go run`.
+  # goose, applying backend/migrations. It runs to completion and exits 0;
+  # the API does not start unless it does.
   migrate:
-    profiles: [app]
     build: ./backend
     image: tablero-api:local
     entrypoint: ["/app/migrate"]
+    restart: "no"
     environment:
       DATABASE_URL: postgres://tablero:tablero@db:5432/tablero?sslmode=disable
     depends_on:
@@ -31,30 +37,63 @@ services:
         condition: service_healthy
 
   api:
-    profiles: [app]
     build: ./backend
     image: tablero-api:local
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://tablero:tablero@db:5432/tablero?sslmode=disable
       PORT: "8080"
-      # The frontend that calls it (the e2e tests serve it on 3000).
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # The frontend's origin, as the browser sees it.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${WEB_PORT:-3000}}
       # Only for this local/CI stack; production sets its own.
       JWT_SECRET: ${JWT_SECRET:-solo-para-desarrollo-y-e2e-no-usar-en-produccion}
       # Browsers accept Secure cookies on http://localhost.
       COOKIE_SECURE: "true"
       EVENTS_BACKEND: memory
+      # On SIGTERM: /ready turns 503 and the API keeps serving SHUTDOWN_DELAY
+      # (what's already queued gets in), then stops accepting and gives the
+      # requests in flight SHUTDOWN_TIMEOUT. Both fit in stop_grace_period,
+      # after which Docker sends SIGKILL.
+      SHUTDOWN_DELAY: 3s
+      SHUTDOWN_TIMEOUT: 15s
+    stop_grace_period: 20s
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:
+      db:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Readiness (/ready pings the database), so `web` waits for an API that can work.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
+      test: ["CMD", "/app/healthcheck", "http://localhost:8080/ready"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the client bundle: the API as the browser reaches it.
+        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:-http://localhost:${API_PORT:-8080}}
+    image: tablero-web:local
+    restart: unless-stopped
+    # tini as PID 1, so SIGTERM reaches node and `docker compose stop` is quick.
+    init: true
+    stop_grace_period: 20s
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/login').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
 
 volumes:
   pgdata:

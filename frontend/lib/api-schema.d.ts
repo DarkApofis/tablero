@@ -11,8 +11,29 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Estado del servicio y de la base de datos */
+        /**
+         * Liveness: el proceso está vivo y atiende
+         * @description No consulta la base de datos: una caída de Postgres no debe hacer que se
+         *     reinicie una API sana. Para saber si puede atender tráfico, `GET /ready`.
+         */
         get: operations["getHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Readiness: la API puede atender, con la base de datos disponible */
+        get: operations["getReady"];
         put?: never;
         post?: never;
         delete?: never;
@@ -620,7 +641,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "internal_error";
+        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "internal_error";
         TaskConflict: {
             error: components["schemas"]["ErrorDetail"];
             current: components["schemas"]["Task"];
@@ -1161,7 +1182,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description El servicio y la base de datos responden. */
+            /** @description El proceso responde. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1173,7 +1194,34 @@ export interface operations {
                     };
                 };
             };
-            /** @description La base de datos no responde (`db_unavailable`). */
+        };
+    };
+    getReady: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La base de datos responde. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "ok";
+                    };
+                };
+            };
+            /**
+             * @description La base de datos no responde (`db_unavailable`), o la API recibió SIGTERM y se
+             *     está apagando (`shutting_down`): sigue atendiendo `SHUTDOWN_DELAY` para que el
+             *     balanceador deje de enviarle tráfico.
+             */
             503: {
                 headers: {
                     [name: string]: unknown;
