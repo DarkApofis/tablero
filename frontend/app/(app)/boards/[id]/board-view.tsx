@@ -8,7 +8,7 @@ import { ApiError } from "@/lib/api";
 import { useBoard, type BoardDetail } from "@/lib/boards";
 import { matchesFilters, readFilters, UNASSIGNED, writeFilters, type TaskFilters } from "@/lib/tasks";
 import { useWorkspaces } from "@/lib/workspaces";
-import { BoardColumn } from "./board-column";
+import { BoardCanvas } from "./board-canvas";
 import { BoardSkeleton } from "./board-skeleton";
 import { FilterBar } from "./filter-bar";
 
@@ -97,17 +97,7 @@ export function BoardView({ boardId }: { boardId: string }) {
             onChange={setFilters}
             shown={visible.reduce((n, list) => n + list.length, 0)}
           />
-          {/* Focusable so the arrow keys scroll it sideways. */}
-          <div
-            role="region"
-            aria-label="Columnas del tablero"
-            tabIndex={0}
-            className="flex min-h-0 flex-1 items-start gap-4 overflow-x-auto scroll-px-5 p-5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-text max-sm:snap-x max-sm:snap-mandatory max-sm:scroll-px-3 max-sm:gap-2.5 max-sm:p-3"
-          >
-            {b.columns.map((c, i) => (
-              <BoardColumn key={c.id} column={c} tasks={visible[i]} filtered={filtered} today={today} />
-            ))}
-          </div>
+          <BoardCanvas board={b} visible={visible} filtered={filtered} today={today} />
         </>
       )}
     </>

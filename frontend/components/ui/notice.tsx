@@ -49,6 +49,8 @@ type NoticeProps = {
   compact?: boolean;
   /** Raised with a shadow, for toasts over the board. */
   floating?: boolean;
+  /** Overrides the tone's role, e.g. a quiet `status` for a conflict. */
+  role?: "alert" | "status";
   className?: string;
 };
 
@@ -59,12 +61,13 @@ export function Notice({
   actions,
   compact = false,
   floating = false,
+  role,
   className,
 }: NoticeProps) {
   const t = tones[tone];
   return (
     <div
-      role={t.role}
+      role={role ?? t.role}
       className={cx(
         "flex w-full items-start gap-3 rounded-xl border",
         compact ? "px-3 py-2.5" : "px-3.5 py-3",

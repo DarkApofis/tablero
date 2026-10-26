@@ -1,4 +1,4 @@
-import { columnBox } from "./board-column";
+import { columnBox } from "./styles";
 
 const bar = "animate-pulse rounded bg-border";
 

@@ -17,16 +17,23 @@ const priorityTones: Record<Priority, string> = {
   urgent: "text-danger",
 };
 
-export function TaskCard({ task, today }: { task: Task; today: Date }) {
+type Props = {
+  task: Task;
+  today: Date;
+  /** The copy that follows the pointer while dragging; it skips the ids. */
+  overlay?: boolean;
+};
+
+export function TaskCard({ task, today, overlay = false }: Props) {
   const due = task.due_date ? describeDue(task.due_date, today) : null;
-  const titleId = `task-${task.id}`;
+  const titleId = overlay ? undefined : `task-${task.id}`;
 
   return (
     <article
       aria-labelledby={titleId}
       className={cx(
         "relative flex flex-col gap-2.5 rounded-xl border bg-surface2 px-3 pb-2.5 pt-3",
-        due?.tone === "late" ? "border-danger/40" : "border-border",
+        overlay ? "border-accent" : due?.tone === "late" ? "border-danger/40" : "border-border",
       )}
     >
       {task.labels.length > 0 && (
