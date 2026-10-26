@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api, isTaskConflict, type Schemas, type Task } from "./api";
 import type { Priority } from "./tasks";
 
@@ -12,11 +12,14 @@ export const boardKeys = {
   detail: (id: string) => ["boards", id] as const,
 };
 
-export function useBoard(boardId: string) {
-  return useQuery({
+export const boardQuery = (boardId: string) =>
+  queryOptions({
     queryKey: boardKeys.detail(boardId),
     queryFn: ({ signal }) => api.get("/boards/{id}", { path: { id: boardId }, signal }),
   });
+
+export function useBoard(boardId: string) {
+  return useQuery(boardQuery(boardId));
 }
 
 /** Where a task goes: a column and, optionally, the tasks it lands between. */

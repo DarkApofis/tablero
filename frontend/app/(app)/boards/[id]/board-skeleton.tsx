@@ -5,7 +5,8 @@ const bar = "animate-pulse rounded bg-border";
 /** Placeholder with the board's layout, shared by the route's Suspense and the query. */
 export function BoardSkeleton() {
   return (
-    <div className="flex min-h-0 flex-1 flex-col" aria-busy="true" aria-label="Cargando tablero">
+    <div className="flex min-h-0 flex-1 flex-col" role="status" aria-busy="true">
+      <span className="sr-only">Cargando tablero…</span>
       <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-3 sm:px-5">
         <div className="size-8 animate-pulse rounded-lg bg-border" />
         <div className={`${bar} h-4 w-40`} />

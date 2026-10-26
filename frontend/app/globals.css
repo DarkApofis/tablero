@@ -9,6 +9,7 @@
   --raised: #20242a;
   --border: #262a31;
   --border-strong: #3a4049;
+  --control-border: #68717d; /* text fields: 3:1 against every surface (WCAG 1.4.11) */
   --text: #eceef1;
   --muted: #a0a7b1;
   --faint: #848c97;
@@ -33,6 +34,8 @@
     --raised: #ffffff;
     --border: #e1e4e8;
     --border-strong: #b9c0c9;
+  --control-border: #808892;
+    --control-border: #808892;
     --text: #14171a;
     --muted: #4f5964;
     --faint: #65707b;
@@ -80,6 +83,7 @@
   --color-raised: var(--raised);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+  --color-control-border: var(--control-border);
   --color-text: var(--text);
   --color-muted: var(--muted);
   --color-faint: var(--faint);
@@ -93,7 +97,7 @@
   --color-warn-soft: var(--warn-soft);
   --shadow-pop: var(--shadow-lg);
   --font-sans: var(--font-geist-sans), system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-mono: ui-monospace, monospace;
 }
 
 body {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useId } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";
@@ -12,6 +12,7 @@ import { describeDue, priorities, type Priority } from "@/lib/tasks";
 import { useMembers, type Member } from "@/lib/workspaces";
 import type { Toast } from "./board-toast";
 import { CheckboxMenu } from "./checkbox-menu";
+import { PanelFrame } from "./panel-frame";
 import { PriorityBadge } from "./task-card";
 import { changesBetween, fieldsOf, useTaskEditor, type Conflict, type FieldKey } from "./use-task-editor";
 
@@ -22,8 +23,6 @@ type Props = {
   notify: (toast: Toast) => void;
 };
 
-const panelBox =
-  "flex min-h-0 w-[440px] shrink-0 flex-col border-l border-border bg-surface outline-none max-lg:fixed max-lg:bottom-0 max-lg:right-0 max-lg:top-14 max-lg:z-40 max-lg:w-[min(440px,100vw)] max-lg:shadow-[var(--shadow-lg)]";
 const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text";
 const fieldNames: Record<FieldKey, string> = {
   title: "Título",
@@ -203,7 +202,7 @@ function TaskEditor({ board, task, onClose, notify }: { board: BoardDetail; task
               aria-invalid={fieldErrors.assignee_id ? true : undefined}
               aria-describedby={fieldErrors.assignee_id ? `${ids.assignee}-error` : undefined}
               className={cx(
-                "h-8 min-w-0 flex-1 rounded-lg border border-border-strong bg-surface2 px-2 text-[13.5px] aria-invalid:border-danger",
+                "h-8 min-w-0 flex-1 rounded-lg border border-control-border bg-surface2 px-2 text-[13.5px] aria-invalid:border-danger",
                 focusRing,
               )}
             >
@@ -241,7 +240,7 @@ function TaskEditor({ board, task, onClose, notify }: { board: BoardDetail; task
               value={draft.due_date ?? ""}
               onChange={(e) => set("due_date", e.target.value || null)}
               aria-describedby={due ? `${ids.due}-state` : undefined}
-              className={cx("h-8 rounded-lg border border-border-strong bg-surface2 px-2 text-[13.5px]", focusRing)}
+              className={cx("h-8 rounded-lg border border-control-border bg-surface2 px-2 text-[13.5px]", focusRing)}
             />
           )}
           {due ? (
@@ -310,7 +309,7 @@ function TaskEditor({ board, task, onClose, notify }: { board: BoardDetail; task
               placeholder="Añade detalles, criterios de aceptación o enlaces."
               aria-invalid={fieldErrors.description ? true : undefined}
               className={cx(
-                "w-full resize-y rounded-[10px] border border-border-strong bg-surface2 px-3 py-2.5 text-sm leading-[1.55] placeholder:text-faint aria-invalid:border-danger",
+                "w-full resize-y rounded-[10px] border border-control-border bg-surface2 px-3 py-2.5 text-sm leading-[1.55] placeholder:text-faint aria-invalid:border-danger",
                 "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-text",
               )}
             />
@@ -326,58 +325,6 @@ function TaskEditor({ board, task, onClose, notify }: { board: BoardDetail; task
         )}
       </div>
     </PanelFrame>
-  );
-}
-
-function PanelFrame({
-  label,
-  chip,
-  status,
-  live = "",
-  onClose,
-  children,
-}: {
-  label: string;
-  chip?: string;
-  status: ReactNode;
-  live?: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLElement>(null);
-  // Opening moves focus here, so the panel is read from its label.
-  useEffect(() => ref.current?.focus(), []);
-
-  return (
-    <aside
-      ref={ref}
-      tabIndex={-1}
-      aria-label={label}
-      className={panelBox}
-      onKeyDown={(e) => {
-        // Menus inside stop their own Escape first.
-        if (e.key === "Escape" && !e.defaultPrevented) onClose();
-      }}
-    >
-      <div className="flex shrink-0 items-center gap-2.5 border-b border-border px-5 py-3">
-        {chip && (
-          <span className="max-w-[45%] truncate rounded-md border border-border px-2 py-0.5 text-xs text-muted">{chip}</span>
-        )}
-        <div className="min-w-0 flex-1 truncate">{status}</div>
-        <span className="sr-only" role="status">
-          {live}
-        </span>
-        <button
-          type="button"
-          aria-label="Cerrar panel"
-          onClick={onClose}
-          className={cx("flex size-[30px] items-center justify-center rounded-lg text-xl text-muted hover:bg-surface2", focusRing)}
-        >
-          ×
-        </button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto px-5 pb-6 pt-[18px]">{children}</div>
-    </aside>
   );
 }
 

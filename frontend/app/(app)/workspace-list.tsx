@@ -15,7 +15,8 @@ export function WorkspaceList() {
 
   if (isPending) {
     return (
-      <div className={grid} aria-busy="true" aria-label="Cargando workspaces">
+      <div className={grid} role="status" aria-busy="true">
+        <span className="sr-only">Cargando workspaces…</span>
         {[0, 1, 2].map((i) => (
           <div key={i} className="flex h-[150px] flex-col gap-4 rounded-2xl border border-border bg-surface p-5">
             <div className="h-5 w-2/5 animate-pulse rounded bg-border" />
@@ -95,7 +96,10 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
         {boards.data ? (
           plural(boards.data.length, "tablero activo", "tableros activos")
         ) : boards.isPending ? (
-          <span className="inline-block h-3 w-24 animate-pulse rounded bg-border align-middle" aria-label="Cargando tableros" />
+          <>
+            <span aria-hidden className="inline-block h-3 w-24 animate-pulse rounded bg-border align-middle" />
+            <span className="sr-only">cargando tableros</span>
+          </>
         ) : (
           "tableros no disponibles"
         )}

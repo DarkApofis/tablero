@@ -31,7 +31,7 @@ export function Input({ label, error, size = "md", id, className, ...props }: In
         "w-full rounded-[10px] border bg-surface px-3 font-[inherit] text-sm text-text placeholder:text-faint",
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-text",
         "disabled:cursor-not-allowed disabled:opacity-60",
-        invalid ? "border-danger" : "border-border-strong",
+        invalid ? "border-danger" : "border-control-border",
         sizes[size],
         !label && !error && className,
       )}

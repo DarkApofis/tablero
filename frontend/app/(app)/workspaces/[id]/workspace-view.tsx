@@ -84,7 +84,8 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
 
 export function WorkspaceSkeleton() {
   return (
-    <div className="flex flex-col gap-6" aria-busy="true" aria-label="Cargando tableros">
+    <div className="flex flex-col gap-6" role="status" aria-busy="true">
+      <span className="sr-only">Cargando tableros…</span>
       <div className="flex flex-col gap-2">
         <div className="h-8 w-56 animate-pulse rounded bg-border" />
         <div className="h-4 w-32 animate-pulse rounded bg-border" />

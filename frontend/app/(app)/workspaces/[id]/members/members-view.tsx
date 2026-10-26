@@ -39,7 +39,11 @@ export function MembersView({ workspaceId }: { workspaceId: string }) {
         title={forbidden ? "No tienes acceso a este workspace" : "No pudimos cargar los miembros"}
         actions={
           forbidden ? (
-            <Link href="/" className="text-[13px] font-semibold text-accent-text underline-offset-2 hover:underline">
+            <Link
+              href="/"
+              // The error notice's tinted background: plain text color, underlined, keeps 4.5:1.
+              className="rounded text-[13px] font-semibold text-text underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
+            >
               Volver a tus workspaces
             </Link>
           ) : (
@@ -229,7 +233,8 @@ function describe(err: unknown) {
 
 export function MembersSkeleton() {
   return (
-    <div className="flex flex-col gap-[22px]" aria-busy="true" aria-label="Cargando miembros">
+    <div className="flex flex-col gap-[22px]" role="status" aria-busy="true">
+      <span className="sr-only">Cargando miembros…</span>
       <div className="flex flex-col gap-2">
         <div className="h-7 w-40 animate-pulse rounded bg-border" />
         <div className="h-4 w-56 animate-pulse rounded bg-border" />

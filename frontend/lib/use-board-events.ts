@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { activityFromEvent, activityKeys, addActivity } from "./activity";
 import { API_URL, refreshSession } from "./api";
 import { applyEvent, DOMAIN_EVENTS, eventTouchesTask, type PresenceUser, type StreamEvent } from "./board-events";
 import { boardKeys, type BoardDetail } from "./boards";
@@ -48,10 +49,12 @@ export function useBoardEvents(boardId: string, { enabled }: { enabled: boolean 
     const waitingForFetch: StreamEvent[] = [];
 
     const board = () => queryClient.getQueryData<BoardDetail>(queryKey);
+    // Names the events don't carry: from the members list, or whoever is connected.
+    const present = new Map<string, string>();
     const nameOf = (userId: string) => {
       const workspaceId = board()?.workspace_id;
       const members = workspaceId ? queryClient.getQueryData<Member[]>(workspaceKeys.members(workspaceId)) : undefined;
-      return members?.find((m) => m.user_id === userId)?.name;
+      return members?.find((m) => m.user_id === userId)?.name ?? present.get(userId);
     };
 
     const applyNow = (event: StreamEvent) => {
@@ -143,20 +146,27 @@ export function useBoardEvents(boardId: string, { enabled }: { enabled: boolean 
         es.addEventListener(type, (e) => {
           remember(e);
           const event = parse<StreamEvent>(e);
-          if (event?.board_id === boardId) apply(event);
+          if (event?.board_id !== boardId) return;
+          // The activity feed is a log: it takes every event, held or not.
+          addActivity(queryClient, boardId, activityFromEvent(event, nameOf));
+          apply(event);
         });
       }
       es.addEventListener("resync", (e) => {
         remember(e);
         reload();
+        void queryClient.invalidateQueries({ queryKey: activityKeys.board(boardId) });
       });
       es.addEventListener("presence.snapshot", (e) => {
         const data = parse<{ users: PresenceUser[] }>(e);
-        if (data) setPresence(data.users);
+        if (!data) return;
+        data.users.forEach((u) => present.set(u.id, u.name));
+        setPresence(data.users);
       });
       es.addEventListener("presence.joined", (e) => {
         const user = parse<{ user: PresenceUser }>(e)?.user;
         if (user) {
+          present.set(user.id, user.name);
           setPresence((users) =>
             users.some((u) => u.id === user.id)
               ? users

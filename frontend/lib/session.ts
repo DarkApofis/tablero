@@ -19,6 +19,11 @@ export function clearSignedIn() {
   document.cookie = `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
+/** Whether this browser holds a session, as far as the flag knows. */
+export function isSignedIn() {
+  return document.cookie.split("; ").some((c) => c === `${SESSION_COOKIE}=1`);
+}
+
 /** `next` if it is a path on this site, else "/". Prevents open redirects. */
 export function safeNextPath(next: string | null | undefined): string {
   if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return "/";

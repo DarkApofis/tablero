@@ -1,6 +1,5 @@
-import { z } from "zod";
 import type { components, paths } from "./api-schema";
-import { clearSignedIn, markSignedIn } from "./session";
+import { clearSignedIn, isSignedIn, markSignedIn } from "./session";
 
 export type Schemas = components["schemas"];
 export type Task = Schemas["Task"];
@@ -51,6 +50,13 @@ export function refreshSession(): Promise<boolean> {
     refreshing = null;
   });
   return refreshing;
+}
+
+// After a reload the page needs a token before any data: start renewing as soon as
+// this module runs, while React is still hydrating, rather than when the first
+// query fires. request() waits for the same renewal.
+if (typeof window !== "undefined" && isSignedIn()) {
+  refreshSession().catch(() => {});
 }
 
 async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -112,15 +118,30 @@ type Args<O> = object extends Options<O> ? [options?: Options<O>] : [options: Op
 
 export type ApiErrorCode = ErrorCode | "network_error" | "unexpected_response";
 
-const errorBody = z.object({
-  error: z.object({
-    code: z.string(),
-    message: z.string(),
-    fields: z.record(z.string(), z.string()).optional(),
-  }),
+type ErrorBody = {
+  error: { code: string; message: string; fields?: Record<string, string> };
   // Only on 409 (version_conflict / neighbors_changed): the task as it is now.
-  current: z.looseObject({ id: z.string(), version: z.number() }).optional(),
-});
+  current?: Task;
+};
+
+// Checked by hand rather than with zod: this module ships on every page.
+function parseErrorBody(body: unknown): ErrorBody | null {
+  if (!isObject(body) || !isObject(body.error)) return null;
+  const { code, message, fields } = body.error;
+  if (typeof code !== "string" || typeof message !== "string") return null;
+  if (fields !== undefined && !(isObject(fields) && Object.values(fields).every((v) => typeof v === "string"))) {
+    return null;
+  }
+  const current = body.current;
+  if (current !== undefined && !(isObject(current) && typeof current.id === "string" && typeof current.version === "number")) {
+    return null;
+  }
+  return body as ErrorBody;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -154,8 +175,8 @@ export function isTaskConflict(err: unknown): err is ApiError & { current: Task 
 
 async function toApiError(res: Response): Promise<ApiError> {
   const requestId = res.headers.get("X-Request-ID");
-  const parsed = errorBody.safeParse(await res.json().catch(() => null));
-  if (!parsed.success) {
+  const parsed = parseErrorBody(await res.json().catch(() => null));
+  if (!parsed) {
     return new ApiError({
       status: res.status,
       code: "unexpected_response",
@@ -163,13 +184,13 @@ async function toApiError(res: Response): Promise<ApiError> {
       requestId,
     });
   }
-  const { error, current } = parsed.data;
+  const { error, current } = parsed;
   return new ApiError({
     status: res.status,
     code: error.code as ErrorCode,
     message: error.message,
     fields: error.fields,
-    current: res.status === 409 ? (current as Task | undefined) : undefined,
+    current: res.status === 409 ? current : undefined,
     requestId,
   });
 }
@@ -202,6 +223,18 @@ function networkError() {
 }
 
 async function request(method: Method, template: string, opts: RawOptions = {}, retried = false): Promise<unknown> {
+  // After a reload the token is gone but the session isn't: renew first rather than
+  // send the request, get a 401 and send it again. That round trip delayed every
+  // first paint with data. Concurrent requests share the one renewal.
+  if (accessToken === null && !retried && !template.startsWith("/auth/") && isSignedIn()) {
+    try {
+      await refreshSession();
+    } catch {
+      // The API didn't answer; the request below will say so.
+    }
+    retried = true;
+  }
+
   const headers = new Headers(opts.headers);
   headers.set("Accept", "application/json");
   if (opts.body !== undefined) headers.set("Content-Type", "application/json");

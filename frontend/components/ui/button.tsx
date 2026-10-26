@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { cx } from "./cx";
 
 const variants = {
@@ -14,7 +14,7 @@ const sizes = {
   lg: "h-11 px-5 text-[15px]",
 };
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+type ButtonProps = ComponentProps<"button"> & {
   variant?: keyof typeof variants;
   size?: keyof typeof sizes;
   loading?: boolean;
@@ -32,18 +32,25 @@ export function Button({
   type = "button",
   className,
   children,
+  onClick,
   ...props
 }: ButtonProps) {
   return (
     <button
       type={type}
-      disabled={disabled || loading}
+      disabled={disabled}
+      // Loading doesn't disable it: a disabled button drops the keyboard focus.
+      aria-disabled={loading || undefined}
       aria-busy={loading || undefined}
+      onClick={(e) => {
+        if (loading) e.preventDefault();
+        else onClick?.(e);
+      }}
       className={cx(
         "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[10px] border font-semibold",
         "transition-[filter,transform] duration-150 enabled:cursor-pointer enabled:hover:brightness-110 enabled:active:translate-y-px",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text",
-        "disabled:cursor-not-allowed",
+        "disabled:cursor-not-allowed aria-disabled:cursor-progress",
         disabled && "opacity-50",
         variants[variant],
         sizes[size],
