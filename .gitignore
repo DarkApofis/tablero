@@ -3,5 +3,10 @@ node_modules/
 .env
 bin/
 
+# Tests del frontend
+frontend/e2e/.state/
+frontend/test-results/
+frontend/playwright-report/
+
 # Configuración local de Claude Code
 .claude/settings.local.json

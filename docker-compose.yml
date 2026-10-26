@@ -16,5 +16,45 @@ services:
       timeout: 3s
       retries: 10
 
+  # The API in a container, for the end-to-end tests and CI:
+  #   docker compose --profile app up -d --build --wait
+  # Plain `docker compose up` still starts only the database, for `go run`.
+  migrate:
+    profiles: [app]
+    build: ./backend
+    image: tablero-api:local
+    entrypoint: ["/app/migrate"]
+    environment:
+      DATABASE_URL: postgres://tablero:tablero@db:5432/tablero?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    profiles: [app]
+    build: ./backend
+    image: tablero-api:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://tablero:tablero@db:5432/tablero?sslmode=disable
+      PORT: "8080"
+      # The frontend that calls it (the e2e tests serve it on 3000).
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Only for this local/CI stack; production sets its own.
+      JWT_SECRET: ${JWT_SECRET:-solo-para-desarrollo-y-e2e-no-usar-en-produccion}
+      # Browsers accept Secure cookies on http://localhost.
+      COOKIE_SECURE: "true"
+      EVENTS_BACKEND: memory
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
 volumes:
   pgdata:

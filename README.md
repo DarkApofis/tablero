@@ -107,6 +107,29 @@ y la borra al terminar.
 TEST_DATABASE_URL="postgres://tablero:tablero@localhost:5432/tablero?sslmode=disable" go test ./...
 ```
 
+### Frontend
+
+```sh
+cd frontend
+pnpm test          # Vitest + Testing Library: caché del tablero y formulario de login
+pnpm test:e2e      # Playwright contra la API real (abajo)
+```
+
+Los e2e abren dos o tres navegadores con personas distintas en el mismo tablero
+(mover una tarjeta en vivo, edición simultánea con conflicto, viewer sin arrastre).
+Necesitan la API levantada con Docker Compose (perfil `app`: Postgres, migraciones
+y API construida desde el código):
+
+```sh
+docker compose --profile app up -d --build --wait
+cd frontend && pnpm exec playwright install chromium && pnpm test:e2e
+```
+
+Playwright construye y sirve el frontend en el puerto 3000 y crea usuarios y un
+workspace «E2E …» en la base. Si el 8080 está ocupado:
+`API_PORT=8090 docker compose --profile app up -d --build --wait` y
+`E2E_API_URL=http://localhost:8090 pnpm test:e2e`.
+
 Lint: `golangci-lint run ./...` en `backend/` (incluye `depguard`, que impide que
 `domain` o `app` importen adaptadores) y `pnpm lint` en `frontend/`.
 
@@ -123,7 +146,8 @@ a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/adapters/p
 `.github/workflows/ci.yml` corre en cada push a `main` y en cada pull request:
 
 - **Backend:** `go vet`, `golangci-lint` (con las reglas de dependencias de la arquitectura), tests (con Postgres como servicio) y build.
-- **Frontend:** `pnpm lint` y `pnpm build`.
+- **Frontend:** `pnpm lint`, `pnpm test` y `pnpm build`.
+- **E2E:** levanta el backend con `docker compose --profile app` y corre `pnpm test:e2e`; si falla, sube el informe de Playwright y los logs de la API.
 
 ## Estado
 
