@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -10,13 +10,19 @@ import { matchesFilters, readFilters, UNASSIGNED, writeFilters, type TaskFilters
 import { useWorkspaces } from "@/lib/workspaces";
 import { BoardCanvas } from "./board-canvas";
 import { BoardSkeleton } from "./board-skeleton";
+import { ToastRegion, type Toast } from "./board-toast";
 import { FilterBar } from "./filter-bar";
+import { TaskPanel } from "./task-panel";
 
 export function BoardView({ boardId }: { boardId: string }) {
   const board = useBoard(boardId);
   const workspaces = useWorkspaces();
   const searchParams = useSearchParams();
   const [today] = useState(() => new Date());
+  const [toast, setToast] = useState<Toast | null>(null);
+  const dismissToast = useCallback(() => setToast(null), []);
+  // Whether this page pushed the history entry of the open panel.
+  const pushedPanel = useRef(false);
   const name = board.data?.name;
 
   // The route's metadata can't know the name; it comes from the API.
@@ -49,6 +55,34 @@ export function BoardView({ boardId }: { boardId: string }) {
   const setFilters = (next: TaskFilters) => {
     const query = writeFilters(new URLSearchParams(window.location.search), next).toString();
     window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+  };
+
+  // The open task lives in the URL (?task=), so it can be shared and Back closes it.
+  const openId = searchParams.get("task");
+  const openTask = (taskId: string) => {
+    const params = new URLSearchParams(window.location.search);
+    const switching = params.has("task");
+    params.set("task", taskId);
+    if (switching) {
+      window.history.replaceState(null, "", `?${params}`);
+    } else {
+      window.history.pushState(null, "", `?${params}`);
+      pushedPanel.current = true;
+    }
+  };
+  const closeTask = () => {
+    const taskId = openId;
+    if (pushedPanel.current) {
+      pushedPanel.current = false;
+      window.history.back();
+    } else {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("task");
+      const query = params.toString();
+      window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+    }
+    // Back to the card that opened it, once the panel is gone.
+    setTimeout(() => document.querySelector<HTMLElement>(`[data-task-id="${taskId}"]`)?.focus(), 50);
   };
 
   return (
@@ -97,9 +131,21 @@ export function BoardView({ boardId }: { boardId: string }) {
             onChange={setFilters}
             shown={visible.reduce((n, list) => n + list.length, 0)}
           />
-          <BoardCanvas board={b} visible={visible} filtered={filtered} today={today} />
+          <div className="flex min-h-0 flex-1">
+            <BoardCanvas
+              board={b}
+              visible={visible}
+              filtered={filtered}
+              today={today}
+              openId={openId}
+              onOpen={openTask}
+              notify={setToast}
+            />
+            {openId && <TaskPanel board={b} taskId={openId} onClose={closeTask} notify={setToast} />}
+          </div>
         </>
       )}
+      <ToastRegion toast={toast} onDismiss={dismissToast} />
     </>
   );
 }

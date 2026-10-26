@@ -20,11 +20,14 @@ type Props = {
   canDrag: boolean;
   /** Tasks whose move is still saving; they can't be dragged again until it lands. */
   pendingIds: string[];
+  openId: string | null;
+  onOpen: (taskId: string) => void;
   /** Whether a dragged task is over this column. */
   isTarget: boolean;
 };
 
-export function BoardColumn({ column, tasks, total, filtered, today, canDrag, pendingIds, isTarget }: Props) {
+export function BoardColumn(props: Props) {
+  const { column, tasks, total, filtered, today, canDrag, pendingIds, openId, onOpen, isTarget } = props;
   const headingId = `column-${column.id}`;
   // The whole column takes drops, so an empty one (or its empty end) can too.
   const { setNodeRef } = useDroppable({ id: column.id, data: { type: "column" }, disabled: !canDrag });
@@ -78,6 +81,8 @@ export function BoardColumn({ column, tasks, total, filtered, today, canDrag, pe
                 today={today}
                 draggable={canDrag}
                 saving={pendingIds.includes(t.id)}
+                open={openId === t.id}
+                onOpen={() => onOpen(t.id)}
               />
             ))}
           </ol>

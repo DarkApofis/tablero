@@ -2,6 +2,7 @@
 
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api, isTaskConflict, type Schemas, type Task } from "./api";
+import type { Priority } from "./tasks";
 
 export type BoardDetail = Schemas["BoardDetail"];
 export type BoardColumn = BoardDetail["columns"][number];
@@ -114,4 +115,39 @@ export function useMoveTask(boardId: string) {
   };
 
   return { move, pendingIds };
+}
+
+/** The fields the task panel edits, as PATCH /tasks/{id} takes them. */
+export type TaskFields = {
+  title: string;
+  description: string;
+  priority: Priority;
+  due_date: string | null;
+  assignee_id: string | null;
+  label_ids: string[];
+};
+
+type UpdateVars = { id: string; version: number; changes: Partial<TaskFields> };
+
+/**
+ * Saves edits with the version the client read. The board cache takes the result,
+ * or, on a 409, the server's current task.
+ */
+export function useUpdateTask(boardId: string) {
+  const queryClient = useQueryClient();
+  const queryKey = boardKeys.detail(boardId);
+  return useMutation({
+    mutationKey: ["updateTask", boardId],
+    mutationFn: ({ id, version, changes }: UpdateVars) =>
+      api.patch("/tasks/{id}", { path: { id }, body: { ...changes, version } }),
+    onSuccess: (task) => queryClient.setQueryData<BoardDetail>(queryKey, (b) => b && withTask(b, task)),
+    onError: (err) => {
+      if (isTaskConflict(err)) {
+        queryClient.setQueryData<BoardDetail>(queryKey, (b) => b && withTask(b, err.current));
+      } else if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+        // The role or the task changed; the board says how.
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    },
+  });
 }

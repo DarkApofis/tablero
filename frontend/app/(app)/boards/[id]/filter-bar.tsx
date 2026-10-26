@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { Task } from "@/lib/api";
 import type { Label } from "@/lib/boards";
 import { hasFilters, UNASSIGNED, type TaskFilters } from "@/lib/tasks";
-import { FilterMenu, type FilterOption } from "./filter-menu";
+import { CheckboxMenu, type CheckboxOption } from "./checkbox-menu";
 
 type Props = {
   labels: Label[];
@@ -20,7 +20,7 @@ export function FilterBar({ labels, tasks, filters, onChange, shown }: Props) {
   const barRef = useRef<HTMLDivElement>(null);
   const active = hasFilters(filters);
 
-  const labelOptions: FilterOption[] = labels.map((l) => ({
+  const labelOptions: CheckboxOption[] = labels.map((l) => ({
     value: l.id,
     label: l.name,
     icon: <span aria-hidden className="size-2.5 shrink-0 rounded-full" style={{ background: l.color }} />,
@@ -34,15 +34,17 @@ export function FilterBar({ labels, tasks, filters, onChange, shown }: Props) {
       aria-label="Filtros"
       className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2.5 sm:px-5"
     >
-      <FilterMenu
+      <CheckboxMenu
         label="Etiquetas"
+        legend="Filtrar por etiquetas"
         options={labelOptions}
         selected={filters.labels}
         onChange={(ids) => onChange({ ...filters, labels: ids })}
         emptyText="Este tablero no tiene etiquetas."
       />
-      <FilterMenu
+      <CheckboxMenu
         label="Responsable"
+        legend="Filtrar por responsable"
         options={assigneeOptions(tasks)}
         selected={filters.assignees}
         onChange={(ids) => onChange({ ...filters, assignees: ids })}
@@ -73,8 +75,8 @@ export function FilterBar({ labels, tasks, filters, onChange, shown }: Props) {
 }
 
 /** Everyone who has a task on the board, by name, then "Sin responsable". */
-function assigneeOptions(tasks: Task[]): FilterOption[] {
-  const people = new Map<string, FilterOption>();
+function assigneeOptions(tasks: Task[]): CheckboxOption[] {
+  const people = new Map<string, CheckboxOption & { count: number }>();
   let unassigned = 0;
   for (const t of tasks) {
     if (!t.assignee) {

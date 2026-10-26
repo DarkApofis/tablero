@@ -22,24 +22,19 @@ import {
   type UniqueIdentifier,
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
-import { Button } from "@/components/ui/button";
-import { Notice } from "@/components/ui/notice";
 import { ApiError, isTaskConflict, type Task } from "@/lib/api";
 import { useMoveTask, type BoardDetail } from "@/lib/boards";
 import { BoardColumn } from "./board-column";
+import type { Toast } from "./board-toast";
 import { TaskCard } from "./task-card";
 
 /** Task ids per column id, in the order shown. */
 type Items = Record<string, string[]>;
 
-type Toast = { tone: "conflict" | "error"; title: string; text: string };
-
-const CONFLICT_TOAST_MS = 6000;
-
 const instructions = {
   draggable:
-    "Para mover la tarea, pulsa Espacio o Enter. Con las flechas arriba y abajo cambia de posición, " +
-    "con izquierda y derecha cambia de columna. Pulsa Espacio o Enter para soltarla o Escape para cancelar.",
+    "Pulsa Enter para abrir la tarea. Para moverla, pulsa Espacio: con las flechas arriba y abajo cambia de " +
+    "posición, con izquierda y derecha cambia de columna. Pulsa Espacio o Enter para soltarla o Escape para cancelar.",
 };
 
 type Props = {
@@ -48,9 +43,13 @@ type Props = {
   visible: Task[][];
   filtered: boolean;
   today: Date;
+  /** The task open in the side panel. */
+  openId: string | null;
+  onOpen: (taskId: string) => void;
+  notify: (toast: Toast | null) => void;
 };
 
-export function BoardCanvas({ board, visible, filtered, today }: Props) {
+export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, notify }: Props) {
   const canDrag = board.role !== "viewer";
   const { move, pendingIds } = useMoveTask(board.id);
   // Only set during a drag: where each card is shown while it moves.
@@ -59,7 +58,6 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
   // After a drop, the board the order above was dragged over. The moved card keeps
   // its new spot until the cache, which notifies a tick later, has it too.
   const [heldFor, setHeldFor] = useState<BoardDetail | null>(null);
-  const [toast, setToast] = useState<Toast | null>(null);
   // The announcements read it inside dnd-kit's handlers, before a re-render.
   const itemsRef = useRef<Items | null>(null);
   // The first "over" after picking a card up is the card itself; announcing it
@@ -73,7 +71,11 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
     // A short press, so a swipe still scrolls the board.
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: (event, args) => keyboardCoordinates.current(event, args) }),
+    useSensor(KeyboardSensor, {
+      // Enter opens the task, so only Space picks a card up.
+      keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space", "Enter"] },
+      coordinateGetter: (event, args) => keyboardCoordinates.current(event, args),
+    }),
   );
   // The sensor keeps the getter it was created with; this one reads fresh state.
   const keyboardCoordinates = useRef<KeyboardCoordinateGetter>(() => undefined);
@@ -87,12 +89,6 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
       document.body.style.userSelect = "";
     };
   }, [dragging]);
-
-  useEffect(() => {
-    if (toast?.tone !== "conflict") return;
-    const timer = setTimeout(() => setToast(null), CONFLICT_TOAST_MS);
-    return () => clearTimeout(timer);
-  }, [toast]);
 
   const tasks = new Map(board.columns.flatMap((c) => c.tasks).map((t) => [t.id, t]));
   const columnName = new Map(board.columns.map((c) => [c.id, c.name]));
@@ -175,7 +171,7 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
   };
 
   const onDragStart = ({ active }: DragStartEvent) => {
-    setToast(null);
+    notify(null);
     setActiveId(String(active.id));
     justPickedUp.current = true;
     setItems(baseItems);
@@ -231,13 +227,13 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
           }
           if (isTaskConflict(err)) {
             const where = columnName.get(err.current.column_id);
-            setToast({
+            notify({
               tone: "conflict",
               title: "Alguien movió esta tarjeta",
               text: where ? `«${task.title}» está ahora en ${where}.` : `«${task.title}» volvió a su sitio.`,
             });
           } else {
-            setToast({ tone: "error", title: `No pudimos mover «${task.title}»`, text: describeMoveError(err) });
+            notify({ tone: "error", title: `No pudimos mover «${task.title}»`, text: describeMoveError(err) });
           }
         },
       },
@@ -295,7 +291,7 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
         role="region"
         aria-label="Columnas del tablero"
         tabIndex={0}
-        className="flex min-h-0 flex-1 items-start gap-4 overflow-x-auto scroll-px-5 p-5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-text max-sm:snap-x max-sm:snap-mandatory max-sm:scroll-px-3 max-sm:gap-2.5 max-sm:p-3"
+        className="flex min-h-0 min-w-0 flex-1 items-start gap-4 overflow-x-auto scroll-px-5 p-5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-text max-sm:snap-x max-sm:snap-mandatory max-sm:scroll-px-3 max-sm:gap-2.5 max-sm:p-3"
       >
         {board.columns.map((c) => (
           <BoardColumn
@@ -307,6 +303,8 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
             today={today}
             canDrag={canDrag}
             pendingIds={pendingIds}
+            openId={openId}
+            onOpen={onOpen}
             isTarget={overColumn === c.id && overColumn !== activeTask?.column_id}
           />
         ))}
@@ -323,29 +321,6 @@ export function BoardCanvas({ board, visible, filtered, today }: Props) {
         )}
       </DragOverlay>
 
-      {/* Always mounted, so screen readers hear what appears in it. */}
-      <div
-        aria-live="polite"
-        className="fixed bottom-5 right-5 z-30 w-[400px] max-sm:bottom-3 max-sm:left-3 max-sm:right-3 max-sm:w-auto"
-      >
-        {toast && (
-          <Notice
-            tone={toast.tone}
-            // The conflict already fixed itself; it shouldn't interrupt.
-            role={toast.tone === "conflict" ? "status" : "alert"}
-            title={toast.title}
-            floating
-            compact
-            actions={
-              <Button size="sm" variant="ghost" onClick={() => setToast(null)}>
-                {toast.tone === "conflict" ? "Entendido" : "Cerrar"}
-              </Button>
-            }
-          >
-            {toast.text}
-          </Notice>
-        )}
-      </div>
     </DndContext>
   );
 }

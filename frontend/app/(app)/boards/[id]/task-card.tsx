@@ -77,7 +77,7 @@ export function TaskCard({ task, today, overlay = false }: Props) {
   );
 }
 
-function PriorityBadge({ priority }: { priority: Priority }) {
+export function PriorityBadge({ priority }: { priority: Priority }) {
   const { label, level } = priorities[priority];
   return (
     <span className={cx("inline-flex items-center gap-1.5 font-medium", priorityTones[priority])}>

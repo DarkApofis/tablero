@@ -3,18 +3,22 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { cx } from "@/components/ui/cx";
 
-export type FilterOption = { value: string; label: string; icon?: ReactNode; count: number };
+export type CheckboxOption = { value: string; label: string; icon?: ReactNode; count?: number };
 
 type Props = {
   label: string;
-  options: FilterOption[];
+  /** What the checkboxes do, for screen readers. */
+  legend: string;
+  options: CheckboxOption[];
   selected: string[];
   onChange: (selected: string[]) => void;
   emptyText: string;
+  /** `filter` shows how many are on; `add` is a small dashed "+ label" button. */
+  variant?: "filter" | "add";
 };
 
 /** A disclosure button with a panel of checkboxes; several options can be on at once. */
-export function FilterMenu({ label, options, selected, onChange, emptyText }: Props) {
+export function CheckboxMenu({ label, legend, options, selected, onChange, emptyText, variant = "filter" }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -56,31 +60,39 @@ export function FilterMenu({ label, options, selected, onChange, emptyText }: Pr
         aria-controls={open ? panelId : undefined}
         onClick={() => setOpen((o) => !o)}
         className={cx(
-          "inline-flex h-[30px] items-center gap-1.5 rounded-[9px] border px-2.5 text-[12.5px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text",
-          selected.length > 0
-            ? "border-accent-text/50 bg-accent-soft text-text"
-            : "border-border-strong bg-raised text-text hover:border-faint",
+          "inline-flex items-center gap-1.5 border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text",
+          variant === "add"
+            ? "h-5 rounded-md border-dashed border-border-strong px-2 text-[11.5px] text-muted hover:text-text"
+            : selected.length > 0
+              ? "h-[30px] rounded-[9px] border-accent-text/50 bg-accent-soft px-2.5 text-[12.5px] font-semibold text-text"
+              : "h-[30px] rounded-[9px] border-border-strong bg-raised px-2.5 text-[12.5px] font-semibold text-text hover:border-faint",
         )}
       >
         {label}
-        {selected.length > 0 && (
+        {variant === "filter" && selected.length > 0 && (
           <span className="rounded-full bg-accent px-1.5 text-[11px] leading-[17px] text-accent-ink tabular-nums">
             {selected.length}
             <span className="sr-only">{selected.length === 1 ? " seleccionado" : " seleccionados"}</span>
           </span>
         )}
-        <span aria-hidden className={cx("text-[10px] text-muted transition-transform", open && "rotate-180")}>
-          ▾
-        </span>
+        {variant === "filter" && (
+          <span aria-hidden className={cx("text-[10px] text-muted transition-transform", open && "rotate-180")}>
+            ▾
+          </span>
+        )}
       </button>
 
       {open && (
         <div
           id={panelId}
-          className="absolute left-0 top-full z-20 mt-1.5 w-[min(272px,calc(100vw-24px))] rounded-xl border border-border-strong bg-raised p-1.5 shadow-[var(--shadow-lg)]"
+          className={cx(
+            "absolute top-full z-20 mt-1.5 w-[min(272px,calc(100vw-24px))] rounded-xl border border-border-strong bg-raised p-1.5 shadow-[var(--shadow-lg)]",
+            // The "add" button sits at the end of a row, near the panel's edge.
+            variant === "add" ? "right-0" : "left-0",
+          )}
         >
           <fieldset>
-            <legend className="sr-only">Filtrar por {label.toLowerCase()}</legend>
+            <legend className="sr-only">{legend}</legend>
             {options.length === 0 ? (
               <p className="px-2.5 py-2 text-[13px] text-muted">{emptyText}</p>
             ) : (
@@ -96,10 +108,12 @@ export function FilterMenu({ label, options, selected, onChange, emptyText }: Pr
                       />
                       {o.icon}
                       <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                      <span className="text-xs tabular-nums text-faint">
-                        {o.count}
-                        <span className="sr-only">{o.count === 1 ? " tarea" : " tareas"}</span>
-                      </span>
+                      {o.count !== undefined && (
+                        <span className="text-xs tabular-nums text-faint">
+                          {o.count}
+                          <span className="sr-only">{o.count === 1 ? " tarea" : " tareas"}</span>
+                        </span>
+                      )}
                     </label>
                   </li>
                 ))}
