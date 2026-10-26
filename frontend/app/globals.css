@@ -102,3 +102,10 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   font-size: 14px;
 }
+
+/* The live dot of the connection badge (from the design). */
+@keyframes tb-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

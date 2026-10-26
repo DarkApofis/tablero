@@ -7,9 +7,11 @@ import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api";
 import { useBoard, type BoardDetail } from "@/lib/boards";
 import { matchesFilters, readFilters, UNASSIGNED, writeFilters, type TaskFilters } from "@/lib/tasks";
+import { useBoardEvents } from "@/lib/use-board-events";
 import { useWorkspaces } from "@/lib/workspaces";
 import { BoardCanvas } from "./board-canvas";
 import { BoardSkeleton } from "./board-skeleton";
+import { ConnectionBadge, PresenceAvatars } from "./board-presence";
 import { ToastRegion, type Toast } from "./board-toast";
 import { FilterBar } from "./filter-bar";
 import { TaskPanel } from "./task-panel";
@@ -24,6 +26,10 @@ export function BoardView({ boardId }: { boardId: string }) {
   // Whether this page pushed the history entry of the open panel.
   const pushedPanel = useRef(false);
   const name = board.data?.name;
+  // A failed refetch keeps the board on screen (the badge says it's offline), unless
+  // the board is gone or no longer ours to see.
+  const lost = board.error instanceof ApiError && (board.error.status === 403 || board.error.status === 404);
+  const live = useBoardEvents(boardId, { enabled: board.data !== undefined && !lost });
 
   // The route's metadata can't know the name; it comes from the API.
   useEffect(() => {
@@ -31,7 +37,7 @@ export function BoardView({ boardId }: { boardId: string }) {
   }, [name]);
 
   if (board.isPending) return <BoardSkeleton />;
-  if (board.error) {
+  if (board.error && (!board.data || lost)) {
     return (
       <BoardError
         error={board.error}
@@ -101,6 +107,10 @@ export function BoardView({ boardId }: { boardId: string }) {
           )}
           <h1 className="truncate text-base font-semibold tracking-[-.01em]">{b.name}</h1>
         </div>
+        <ConnectionBadge status={live.status} />
+        <div className="max-sm:hidden">
+          <PresenceAvatars users={live.presence} stale={live.status !== "live"} />
+        </div>
         {b.role === "viewer" && (
           <span className="whitespace-nowrap rounded-lg border border-border-strong px-2 py-1 text-xs font-semibold text-muted">
             Solo lectura
@@ -140,6 +150,7 @@ export function BoardView({ boardId }: { boardId: string }) {
               openId={openId}
               onOpen={openTask}
               notify={setToast}
+              onDragTask={live.holdTask}
             />
             {openId && <TaskPanel board={b} taskId={openId} onClose={closeTask} notify={setToast} />}
           </div>

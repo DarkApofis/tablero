@@ -111,7 +111,9 @@ export function useMoveTask(boardId: string) {
     void queryClient.cancelQueries({ queryKey }, { revert: false });
     const position = positionFor(board, task.id, to);
     queryClient.setQueryData(queryKey, withTask(board, { ...task, column_id: to.columnId, position }));
-    mutation.mutate({ task, to, position }, options);
+    // Not mutate(): its per-call callbacks only run for the latest call, and two
+    // cards can be saving at once.
+    mutation.mutateAsync({ task, to, position }).catch((err: Error) => options?.onError?.(err));
   };
 
   return { move, pendingIds };

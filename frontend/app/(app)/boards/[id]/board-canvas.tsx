@@ -47,9 +47,11 @@ type Props = {
   openId: string | null;
   onOpen: (taskId: string) => void;
   notify: (toast: Toast | null) => void;
+  /** The dragged task, so live updates about it wait for the drop; null when dropped. */
+  onDragTask: (taskId: string | null) => void;
 };
 
-export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, notify }: Props) {
+export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, notify, onDragTask }: Props) {
   const canDrag = board.role !== "viewer";
   const { move, pendingIds } = useMoveTask(board.id);
   // Only set during a drag: where each card is shown while it moves.
@@ -171,6 +173,7 @@ export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, n
   };
 
   const onDragStart = ({ active }: DragStartEvent) => {
+    onDragTask(String(active.id));
     notify(null);
     setActiveId(String(active.id));
     justPickedUp.current = true;
@@ -197,7 +200,13 @@ export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, n
     });
   };
 
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
+  const onDragEnd = (event: DragEndEvent) => {
+    drop(event);
+    // After the drop's own optimistic change, so updates that waited apply on top.
+    onDragTask(null);
+  };
+
+  const drop = ({ active, over }: DragEndEvent) => {
     const its = itemsRef.current;
     const id = String(active.id);
     lastOverId.current = null;
@@ -216,11 +225,16 @@ export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, n
     setHeldFor(board);
 
     // The neighbors the user saw; with filters on, hidden tasks may sit between them.
-    move(
-      task,
-      { columnId: column, afterTaskId: list[index - 1] ?? null, beforeTaskId: list[index + 1] ?? null },
-      {
+    // Live updates during the drag may have moved or deleted some of them.
+    const placed = list.filter((t) => t === id || tasks.get(t)?.column_id === column);
+    const at = placed.indexOf(id);
+    const to = { columnId: column, afterTaskId: placed[at - 1] ?? null, beforeTaskId: placed[at + 1] ?? null };
+    const send = (from: Task, retried: boolean) =>
+      move(from, to, {
         onError: (err) => {
+          // Someone changed the task but left it where it was (an edit that arrived
+          // during the drag, say): the move still makes sense on the new version.
+          if (!retried && isTaskConflict(err) && samePlace(err.current, task)) return send(err.current, true);
           // The card is put back, maybe in another column, which remounts it.
           if ((document.activeElement as HTMLElement | null)?.dataset.taskId === task.id) {
             setTimeout(() => document.querySelector<HTMLElement>(`[data-task-id="${task.id}"]`)?.focus());
@@ -236,11 +250,12 @@ export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, n
             notify({ tone: "error", title: `No pudimos mover «${task.title}»`, text: describeMoveError(err) });
           }
         },
-      },
-    );
+      });
+    send(task, false);
   };
 
   const onDragCancel = () => {
+    onDragTask(null);
     lastOverId.current = null;
     setActiveId(null);
     setItems(null);
@@ -333,6 +348,10 @@ function visibleIndex(its: Items, column: string, activeId: string, overId?: Uni
   const list = its[column];
   const over = overId === undefined ? -1 : list.indexOf(String(overId));
   return over >= 0 && String(overId) !== activeId ? over : list.indexOf(activeId);
+}
+
+function samePlace(a: Task, b: Task) {
+  return a.column_id === b.column_id && a.position === b.position;
 }
 
 function describeMoveError(err: Error) {
