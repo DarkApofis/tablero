@@ -48,6 +48,15 @@ func (m *memFeed) ActivitySince(_ context.Context, _ domain.ID, after int64, lim
 	return out, nil
 }
 
+func (m *memFeed) HasActivity(_ context.Context, _ domain.ID, id int64) (bool, error) {
+	for _, e := range m.entries {
+		if e.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memFeed) LatestActivityID(context.Context, domain.ID) (int64, error) {
 	if len(m.entries) == 0 {
 		return 0, nil
@@ -144,6 +153,37 @@ func TestReconnectReplaysWhatWasMissed(t *testing.T) {
 	feed.add(21, actor)
 	if got := pull(t, st); !equal(got, []int64{21}) {
 		t.Errorf("then live = %v", got)
+	}
+}
+
+// After a reset (the demo's), the log was replaced: a client's last id is
+// gone, and replaying the new entries would not undo its old state.
+func TestResetBoardAsksForAResync(t *testing.T) {
+	feed := &memFeed{}
+	actor := domain.NewID()
+	for _, id := range []int64{20, 21, 22} { // the new log; 5 was in the old one
+		feed.add(id, actor)
+	}
+	svc := board.NewStreamService(&fakeSubscriber{}, feed, directory{}, 10)
+	viewer := domain.Access{Role: domain.RoleViewer}
+	ctx := context.Background()
+
+	last := int64(5)
+	st, _ := svc.Open(ctx, viewer, domain.NewID(), board.StreamOptions{LastEventID: &last})
+	if got := pull(t, st); !equal(got, []int64{-22}) {
+		t.Errorf("reconnect with a deleted id = %v, want a resync at 22", got)
+	}
+
+	// Live: EventReset makes the next pull a resync, whatever the log says.
+	st, _ = svc.Open(ctx, viewer, domain.NewID(), board.StreamOptions{})
+	feed.add(23, actor)
+	st.Reset()
+	if got := pull(t, st); !equal(got, []int64{-23}) {
+		t.Errorf("after Reset = %v, want a resync at 23", got)
+	}
+	feed.add(24, actor)
+	if got := pull(t, st); !equal(got, []int64{24}) {
+		t.Errorf("then live = %v, want [24]", got)
 	}
 }
 

@@ -13,6 +13,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const boardHasActivity = `-- name: BoardHasActivity :one
+SELECT EXISTS (SELECT 1 FROM activity_log WHERE board_id = $1 AND id = $2)
+`
+
+type BoardHasActivityParams struct {
+	BoardID uuid.UUID
+	ID      int64
+}
+
+func (q *Queries) BoardHasActivity(ctx context.Context, arg BoardHasActivityParams) (bool, error) {
+	row := q.db.QueryRow(ctx, boardHasActivity, arg.BoardID, arg.ID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const getActivity = `-- name: GetActivity :one
 SELECT id, workspace_id, board_id, actor_id, type, payload, created_at FROM activity_log
 WHERE id = $1

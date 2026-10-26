@@ -23,6 +23,7 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/app/task"
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
+	"github.com/DarkApofis/tablero/backend/internal/demo"
 )
 
 // main.go is the composition root: it builds the adapters, hands them to the
@@ -108,6 +109,16 @@ func run() error {
 		return err
 	}
 
+	// Demo mode: guest accounts, and the demo's data reset now and then
+	// (which also loads it the first time).
+	var guests httpapi.GuestStarter
+	if cfg.DemoMode {
+		demoService := demo.NewPostgres(pool, authService, publisher, demo.Guests{Max: cfg.DemoMaxGuests, TTL: cfg.DemoGuestTTL})
+		guests = demoService
+		go demoService.RunResets(ctx, cfg.DemoResetInterval)
+		slog.Info("demo mode on", "reset_every", cfg.DemoResetInterval.String(), "guest_ttl", cfg.DemoGuestTTL.String())
+	}
+
 	var shuttingDown atomic.Bool
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
@@ -124,6 +135,7 @@ func run() error {
 			Labels:       board.NewLabelService(labels, activity, tx, publisher),
 			Activity:     board.NewActivityService(activity),
 			Streams:      board.NewStreamService(hub, activity, users, board.DefaultReplayLimit),
+			Guests:       guests,
 			Metrics:      reg,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

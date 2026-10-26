@@ -159,6 +159,11 @@ func (r *Activity) ActivitySince(ctx context.Context, boardID domain.ID, afterID
 	return mapAll(rows, func(a db.ActivityLog) domain.ActivityEntry { return toActivity(a, "") }), err
 }
 
+// HasActivity reports whether entry id is in the board's log.
+func (r *Activity) HasActivity(ctx context.Context, boardID domain.ID, id int64) (bool, error) {
+	return r.q(ctx).BoardHasActivity(ctx, db.BoardHasActivityParams{BoardID: uuid.UUID(boardID), ID: id})
+}
+
 // LatestActivityID is the id of the board's newest entry, or 0.
 func (r *Activity) LatestActivityID(ctx context.Context, boardID domain.ID) (int64, error) {
 	return r.q(ctx).LatestBoardActivityID(ctx, uuid.UUID(boardID))

@@ -49,6 +49,60 @@ Las imágenes son multi-stage. La API es un binario estático sobre distroless (
 `CORS_ORIGINS` y su `JWT_SECRET` se aplican al contenedor de la API.
 `docker compose down` apaga la API sin cortar peticiones (ver *Salud y apagado*).
 
+## Datos de demo
+
+`cmd/seed` carga un workspace de ejemplo listo para enseñar:
+
+```sh
+cd backend && go run ./cmd/seed                     # con DATABASE_URL en el entorno
+docker compose run --rm --entrypoint /app/seed api  # o contra la base de Compose
+```
+
+Usuarios (contraseñas públicas, solo para la demo):
+
+| Persona | Correo | Contraseña | Rol en «Estudio Nube» |
+|---|---|---|---|
+| Ana Torres | `ana@estudionube.example` | `nube-admin-demo` | admin |
+| Bruno Díaz | `bruno@estudionube.example` | `nube-miembro-demo` | miembro |
+| Vera Molina | `vera@estudionube.example` | `nube-viewer-demo` | viewer (solo lectura) |
+
+El workspace **Estudio Nube** tiene el tablero *Rediseño web · Panadería Trigo*: 4 columnas
+(Pendiente, En progreso, En revisión, Hecho), 21 tarjetas (una archivada) con etiquetas,
+prioridades, fechas relativas a hoy (algunas vencidas) y responsables, y 52 entradas de
+actividad (altas, movimientos y cambios) repartidas por los últimos diez días. Todo se crea con los mismos casos de uso
+que la API, así que la actividad es la que la app produciría.
+
+Es idempotente: si los usuarios existen, les devuelve el nombre, la contraseña y el rol
+documentados; si el workspace o el tablero existen, los reutiliza (sus ids y URLs no
+cambian) y deja el tablero **como al principio**, borrando lo que se haya cambiado en él y
+cualquier otro tablero del workspace. No toca nada fuera de «Estudio Nube».
+
+### Modo demo
+
+Con `DEMO_MODE=true` la API carga los datos de demo al arrancar y además:
+
+- El login muestra **«Entrar como invitado»** (`GET /demo` le dice si está activo). Crea una
+  cuenta temporal (`Invitado XXXX`) como miembro de Estudio Nube, inicia su sesión y abre el
+  tablero. Como mucho hay `DEMO_MAX_GUESTS` invitados a la vez; luego responde 429.
+- Cada `DEMO_RESET_INTERVAL` borra los invitados más antiguos que `DEMO_GUEST_TTL` y restaura
+  los datos de demo. Quien tenga el tablero abierto lo ve recargarse solo (el stream le
+  envía un `resync`). Con varias instancias, solo una restaura cada vez (advisory lock).
+
+| Variable | Por defecto | |
+|---|---|---|
+| `DEMO_MODE` | `false` | Activa el modo demo |
+| `DEMO_RESET_INTERVAL` | `1h` | Cada cuánto se restauran los datos (mínimo `1m`) |
+| `DEMO_GUEST_TTL` | `2h` | Edad a partir de la cual el siguiente reset borra a un invitado |
+| `DEMO_MAX_GUESTS` | `100` | Invitados creados dentro del TTL como máximo |
+
+```sh
+DEMO_MODE=true docker compose up -d --build --wait
+```
+
+Las credenciales de la tabla son públicas, también la del admin: en un despliegue con
+`DEMO_MODE` cualquiera puede entrar como Ana. El reset deshace lo que haga, pero no actives
+el modo demo en una base con datos reales.
+
 ## Levantar el proyecto para desarrollar
 
 ### 1. Configuración

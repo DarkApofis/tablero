@@ -28,6 +28,9 @@ type Deps struct {
 	Labels       *board.LabelService
 	Activity     *board.ActivityService
 	Streams      *board.StreamService
+	// Guests creates demo guest accounts (POST /auth/guest); nil when demo
+	// mode is off, and GET /demo says so.
+	Guests GuestStarter
 	// StreamHeartbeat is how often the event stream sends ": ping"
 	// (default 25s); StreamWriteTimeout bounds each of its writes (default 10s).
 	StreamHeartbeat    time.Duration
@@ -54,6 +57,9 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("POST /auth/login", ah.login)
 	mux.HandleFunc("POST /auth/refresh", ah.refresh)
 	mux.HandleFunc("POST /auth/logout", ah.logout)
+	dh := &demoHandler{guests: d.Guests, sessions: ah}
+	mux.HandleFunc("GET /demo", dh.info)
+	mux.HandleFunc("POST /auth/guest", dh.startGuest)
 	mux.Handle("GET /me", requireAuth(d.Auth, http.HandlerFunc(ah.me)))
 
 	authed := func(h http.HandlerFunc) http.Handler { return requireAuth(d.Auth, h) }

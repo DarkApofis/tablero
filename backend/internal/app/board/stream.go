@@ -31,6 +31,8 @@ type ActivityFeed interface {
 	ActivitySince(ctx context.Context, boardID domain.ID, afterID int64, limit int) ([]domain.ActivityEntry, error)
 	// LatestActivityID is the id of the newest entry, or 0.
 	LatestActivityID(ctx context.Context, boardID domain.ID) (int64, error)
+	// HasActivity reports whether entry id is in boardID's log.
+	HasActivity(ctx context.Context, boardID domain.ID, id int64) (bool, error)
 }
 
 // DefaultReplayLimit is how many missed events a reconnecting client may
@@ -121,6 +123,16 @@ func (s *StreamService) Open(ctx context.Context, acc domain.Access, boardID dom
 		// An id past the newest entry did not come from this board's log
 		// (another board, a reset database): the client's state is unknown.
 		st.resync = *id > latest || *id < 0
+		if !st.resync && *id > 0 {
+			// Nor did an id whose entry is gone: the board was reset since
+			// (EventReset), and replaying the new log would not undo the old.
+			found, err := s.feed.HasActivity(ctx, boardID, *id)
+			if err != nil {
+				cancel()
+				return nil, fmt.Errorf("find activity %d: %w", *id, err)
+			}
+			st.resync = !found
+		}
 	}
 	return st, nil
 }
@@ -137,6 +149,9 @@ func (st *Stream) Wake() <-chan domain.Event { return st.wake }
 func (st *Stream) Present() []domain.Presence { return st.present }
 
 func (st *Stream) Close() { st.cancel() }
+
+// Reset makes the next Pull a resync: call it when Wake delivers EventReset.
+func (st *Stream) Reset() { st.resync = true }
 
 // Pull returns, in order, the events after the last one handled: the
 // replay on the first call after a reconnect, new events afterwards. If

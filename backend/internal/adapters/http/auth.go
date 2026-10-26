@@ -150,6 +150,21 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authHandler) writeSession(w http.ResponseWriter, status int, s auth.Session) {
+	h.setSessionCookies(w, s)
+	WriteJSON(w, status, newSessionResponse(s))
+}
+
+func newSessionResponse(s auth.Session) sessionResponse {
+	return sessionResponse{
+		User:        newUserResponse(s.User),
+		AccessToken: s.AccessToken,
+		TokenType:   "Bearer",
+		ExpiresIn:   int(time.Until(s.AccessExpiresAt).Round(time.Second).Seconds()),
+	}
+}
+
+// setSessionCookies sets the refresh and access cookies of a new session.
+func (h *authHandler) setSessionCookies(w http.ResponseWriter, s auth.Session) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    s.RefreshToken,
@@ -171,12 +186,6 @@ func (h *authHandler) writeSession(w http.ResponseWriter, status int, s auth.Ses
 		SameSite: http.SameSiteLaxMode,
 	})
 	w.Header().Set("Cache-Control", "no-store")
-	WriteJSON(w, status, sessionResponse{
-		User:        newUserResponse(s.User),
-		AccessToken: s.AccessToken,
-		TokenType:   "Bearer",
-		ExpiresIn:   int(time.Until(s.AccessExpiresAt).Round(time.Second).Seconds()),
-	})
 }
 
 func (h *authHandler) clearSessionCookies(w http.ResponseWriter) {

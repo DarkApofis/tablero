@@ -29,6 +29,17 @@ type Config struct {
 	// orchestrator's grace period (compose: stop_grace_period).
 	ShutdownDelay   time.Duration
 	ShutdownTimeout time.Duration
+
+	// Demo mode (DEMO_MODE, default false): POST /auth/guest creates guest
+	// accounts in the demo workspace, and the demo's data is reset every
+	// DemoResetInterval (DEMO_RESET_INTERVAL, default 1h, at least 1m), which
+	// also deletes the guests older than DemoGuestTTL (DEMO_GUEST_TTL,
+	// default 2h). At most DemoMaxGuests (DEMO_MAX_GUESTS, default 100)
+	// guests younger than the TTL exist at once.
+	DemoMode          bool
+	DemoResetInterval time.Duration
+	DemoGuestTTL      time.Duration
+	DemoMaxGuests     int
 	// EventsBackend is EVENTS_BACKEND: "memory" (default, one instance) or
 	// "postgres" (LISTEN/NOTIFY, for several instances on one database).
 	EventsBackend string
@@ -88,6 +99,22 @@ func Load() (Config, error) {
 	}
 	if cfg.ShutdownTimeout, err = getDuration("SHUTDOWN_TIMEOUT", 15*time.Second); err != nil {
 		errs = append(errs, err)
+	}
+	if cfg.DemoMode, err = getBool("DEMO_MODE", false); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.DemoResetInterval, err = getDuration("DEMO_RESET_INTERVAL", time.Hour); err != nil {
+		errs = append(errs, err)
+	} else if cfg.DemoResetInterval < time.Minute {
+		errs = append(errs, errors.New("DEMO_RESET_INTERVAL must be at least 1m"))
+	}
+	if cfg.DemoGuestTTL, err = getDuration("DEMO_GUEST_TTL", 2*time.Hour); err != nil {
+		errs = append(errs, err)
+	}
+	if v := os.Getenv("DEMO_MAX_GUESTS"); v == "" {
+		cfg.DemoMaxGuests = 100
+	} else if cfg.DemoMaxGuests, err = strconv.Atoi(v); err != nil || cfg.DemoMaxGuests < 1 {
+		errs = append(errs, errors.New("DEMO_MAX_GUESTS must be a positive number"))
 	}
 
 	if len(errs) > 0 {

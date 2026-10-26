@@ -106,6 +106,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/guest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Entrar como invitado (modo demo)
+         * @description Solo con `DEMO_MODE=true`. Crea una cuenta temporal, miembro del workspace de
+         *     demo, e inicia su sesión como `POST /auth/login` (mismas cookies y cuerpo), más
+         *     el tablero de demo que abrir. La cuenta se borra en el primer reset del demo
+         *     después de `DEMO_GUEST_TTL`.
+         */
+        post: operations["startGuest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/demo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Si el modo demo está activo
+         * @description La pantalla de login lo consulta para ofrecer «Entrar como invitado».
+         */
+        get: operations["getDemo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/refresh": {
         parameters: {
             query?: never;
@@ -641,7 +684,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "internal_error";
+        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "demo_unavailable" | "internal_error";
         TaskConflict: {
             error: components["schemas"]["ErrorDetail"];
             current: components["schemas"]["Task"];
@@ -1353,6 +1396,83 @@ export interface operations {
                 };
             };
             500: components["responses"]["InternalError"];
+        };
+    };
+    startGuest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sesión de invitado iniciada. */
+            201: {
+                headers: {
+                    "Set-Cookie": components["headers"]["RefreshCookie"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"] & {
+                        /** Format: uuid */
+                        workspace_id: string;
+                        /** Format: uuid */
+                        board_id: string;
+                    };
+                };
+            };
+            /** @description El modo demo no está activo (`not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Ya hay `DEMO_MAX_GUESTS` invitados activos (`guest_limit`). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            /** @description El demo todavía no se ha cargado (`demo_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDemo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Estado del modo demo. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description `POST /auth/guest` está disponible. */
+                        guest_access: boolean;
+                    };
+                };
+            };
         };
     };
     refreshSession: {

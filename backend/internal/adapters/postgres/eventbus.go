@@ -68,7 +68,7 @@ type EventBus struct {
 
 // notification is the payload of every NOTIFY, kept short on purpose.
 type notification struct {
-	Kind     string          `json:"k"`           // e event, p presence change, s presence beat, h hello
+	Kind     string          `json:"k"`           // e event, r board reset, p presence change, s presence beat, h hello
 	Origin   string          `json:"o"`           // sending instance
 	BoardID  *uuid.UUID      `json:"b,omitempty"` // e, p, s
 	EventID  int64           `json:"id,omitempty"`
@@ -143,6 +143,11 @@ func (b *EventBus) Publish(ctx context.Context, evs ...domain.Event) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	for _, ev := range evs {
+		if ev.Type == domain.EventReset {
+			board := uuid.UUID(ev.BoardID)
+			b.send(ctx, notification{Kind: "r", BoardID: &board})
+			continue
+		}
 		if ev.Type.IsPresence() || ev.ID == 0 {
 			continue
 		}
@@ -238,6 +243,10 @@ func (b *EventBus) handle(ctx context.Context, payload string) {
 			return
 		}
 		b.hub.Publish(ctx, toActivity(row, "").Event())
+	case "r":
+		if n.BoardID != nil {
+			b.hub.Publish(ctx, domain.Event{Type: domain.EventReset, BoardID: domain.ID(*n.BoardID)})
+		}
 	case "p":
 		if n.BoardID == nil || n.User == nil {
 			return

@@ -69,7 +69,31 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.DemoMode || cfg.DemoResetInterval != time.Hour || cfg.DemoGuestTTL != 2*time.Hour || cfg.DemoMaxGuests != 100 {
+		t.Errorf("demo defaults: %+v", cfg)
+	}
 	if cfg.Port != "8080" || cfg.ShutdownDelay != 0 || cfg.ShutdownTimeout != 15*time.Second || len(cfg.CORSOrigins) != 1 {
 		t.Errorf("cfg = %+v", cfg)
+	}
+}
+
+func TestDemoSettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://tablero:tablero@db:5432/tablero")
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DEMO_MODE", "true")
+	t.Setenv("DEMO_RESET_INTERVAL", "30m")
+	t.Setenv("DEMO_MAX_GUESTS", "5")
+
+	cfg, err := Load()
+	if err != nil || !cfg.DemoMode || cfg.DemoResetInterval != 30*time.Minute || cfg.DemoMaxGuests != 5 {
+		t.Fatalf("cfg = %+v, %v", cfg, err)
+	}
+
+	t.Setenv("DEMO_RESET_INTERVAL", "10s")
+	t.Setenv("DEMO_MAX_GUESTS", "0")
+	_, err = Load()
+	var cfgErr *Error
+	if !errors.As(err, &cfgErr) || len(cfgErr.Problems) != 2 {
+		t.Errorf("err = %v, want DEMO_RESET_INTERVAL and DEMO_MAX_GUESTS rejected", err)
 	}
 }

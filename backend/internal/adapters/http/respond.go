@@ -15,6 +15,8 @@ const (
 	CodeInternal         = "internal_error"
 	CodeDBUnavailable    = "db_unavailable"
 	CodeShuttingDown     = "shutting_down"
+	CodeGuestLimit       = "guest_limit"
+	CodeDemoUnavailable  = "demo_unavailable"
 	CodeInvalidJSON      = "invalid_json"
 	CodeValidation       = "validation_error"
 	CodeInvalidCreds     = "invalid_credentials"

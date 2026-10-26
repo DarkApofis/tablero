@@ -38,6 +38,9 @@ LIMIT @row_limit;
 SELECT COALESCE(max(id), 0)::bigint FROM activity_log
 WHERE board_id = $1;
 
+-- name: BoardHasActivity :one
+SELECT EXISTS (SELECT 1 FROM activity_log WHERE board_id = $1 AND id = $2);
+
 -- name: GetActivity :one
 SELECT * FROM activity_log
 WHERE id = $1;

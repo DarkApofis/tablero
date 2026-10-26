@@ -75,6 +75,8 @@ tags:
       con ejemplos y reglas para el cliente, está en `docs/EVENTS.md`.
   - name: metrics
     description: Métricas del servicio en formato Prometheus.
+  - name: demo
+    description: Modo demo (`DEMO_MODE=true`) con cuentas de invitado. Ver «Datos de demo» en el README.
 
 security:
   - bearerAuth: []
@@ -231,6 +233,67 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/guest:
+    post:
+      tags: [demo]
+      summary: Entrar como invitado (modo demo)
+      operationId: startGuest
+      security: []
+      description: |
+        Solo con `DEMO_MODE=true`. Crea una cuenta temporal, miembro del workspace de
+        demo, e inicia su sesión como `POST /auth/login` (mismas cookies y cuerpo), más
+        el tablero de demo que abrir. La cuenta se borra en el primer reset del demo
+        después de `DEMO_GUEST_TTL`.
+      responses:
+        "201":
+          description: Sesión de invitado iniciada.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Session"
+                  - type: object
+                    required: [workspace_id, board_id]
+                    properties:
+                      workspace_id: { type: string, format: uuid }
+                      board_id: { type: string, format: uuid }
+        "404":
+          description: El modo demo no está activo (`not_found`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Ya hay `DEMO_MAX_GUESTS` invitados activos (`guest_limit`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: El demo todavía no se ha cargado (`demo_unavailable`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /demo:
+    get:
+      tags: [demo]
+      summary: Si el modo demo está activo
+      operationId: getDemo
+      security: []
+      description: La pantalla de login lo consulta para ofrecer «Entrar como invitado».
+      responses:
+        "200":
+          description: Estado del modo demo.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [guest_access]
+                properties:
+                  guest_access: { type: boolean, description: "`POST /auth/guest` está disponible." }
 
   /auth/refresh:
     post:
@@ -1207,6 +1270,8 @@ components:
         - method_not_allowed
         - db_unavailable
         - shutting_down
+        - guest_limit
+        - demo_unavailable
         - internal_error
 
     TaskConflict:

@@ -108,9 +108,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # Postgres, the migrations, the API and the frontend, built from this
-      # commit: the images the tests run against.
+      # commit: the images the tests run against. In demo mode, for the
+      # guest scenario.
       - name: Start the app
         working-directory: .
+        env:
+          DEMO_MODE: "true"
         run: docker compose up -d --build --wait
 
       - uses: pnpm/action-setup@v4

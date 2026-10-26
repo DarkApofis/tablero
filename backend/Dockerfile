@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# The API, its migrations and a healthcheck probe in one image. Compose runs
-# /app/migrate once, then /app/api (see ../docker-compose.yml).
+# The API, its migrations, the demo seed and a healthcheck probe in one image.
+# Compose runs /app/migrate once, then /app/api (see ../docker-compose.yml);
+# `docker compose run --rm --entrypoint /app/seed api` loads the demo data.
 
 # --- build: static binaries (no cgo, so no libc to depend on) ---
 FROM golang:1.26-alpine AS build
@@ -11,7 +12,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    for cmd in api migrate healthcheck; do \
+    for cmd in api migrate seed healthcheck; do \
       go build -ldflags="-s -w" -o /out/$cmd ./cmd/$cmd || exit 1; \
     done
 

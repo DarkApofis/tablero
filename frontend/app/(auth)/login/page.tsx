@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { GuestAccess } from "./guest-access";
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = { title: "Iniciar sesión · Tablero" };
@@ -11,6 +12,7 @@ export default function LoginPage() {
         <p className="mt-1.5 text-sm text-muted">Entra para ver tus tableros en vivo.</p>
       </div>
       <LoginForm />
+      <GuestAccess />
     </>
   );
 }

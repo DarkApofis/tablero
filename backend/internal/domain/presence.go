@@ -21,6 +21,12 @@ const (
 // streams to read the log again (after a listener reconnects, say).
 const EventWake EventType = "wake"
 
+// EventReset is internal too: the board's content was replaced wholesale and
+// its old log entries deleted (the demo's periodic restore). Streams answer it
+// with a resync, since the log no longer explains how the client's copy got
+// to the new state.
+const EventReset EventType = "reset"
+
 // IsPresence reports whether t is a presence event rather than a change of
 // the board.
 func (t EventType) IsPresence() bool {

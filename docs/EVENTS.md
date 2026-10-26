@@ -105,7 +105,7 @@ event: resync
 data: {"last_event_id":57}
 ```
 
-Llega en lugar del reenvío cuando el cliente se perdió **más de 500** eventos, o cuando el `Last-Event-ID` que envió no puede ser de este board (es mayor que el último). El cliente debe descartar su estado, recargar con `GET /boards/{id}` y seguir aplicando lo que llegue: el stream continúa desde `last_event_id`, y como el mensaje lleva `id`, una reconexión posterior parte de ahí.
+Llega en lugar del reenvío cuando el cliente se perdió **más de 500** eventos, o cuando el `Last-Event-ID` que envió no puede ser de este board (es mayor que el último, o ya no está en su registro). También llega en vivo cuando el contenido del board se restaura entero (el reset del modo demo), porque su registro anterior se borra. El cliente debe descartar su estado, recargar con `GET /boards/{id}` y seguir aplicando lo que llegue: el stream continúa desde `last_event_id`, y como el mensaje lleva `id`, una reconexión posterior parte de ahí.
 
 Lo que llegue entre el `resync` y la respuesta del `GET` se puede aplicar o descartar por `version` (tareas). Como el `GET` es posterior, para columnas y etiquetas basta con aplicarlo encima.
 

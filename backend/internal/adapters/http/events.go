@@ -179,6 +179,9 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 			var published map[int64]time.Time
 			pullLog := false
 			for _, ev := range append([]domain.Event{ev}, pending...) {
+				if ev.Type == domain.EventReset {
+					st.Reset()
+				}
 				if !ev.Type.IsPresence() {
 					pullLog = true // one read of the log covers every change
 					if ev.ID != 0 && !ev.PublishedAt.IsZero() {
