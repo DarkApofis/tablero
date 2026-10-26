@@ -154,7 +154,7 @@ func (r *Activity) Append(ctx context.Context, a domain.NewActivity) (domain.Act
 // ActivitySince returns up to limit entries of the board after afterID, oldest first.
 func (r *Activity) ActivitySince(ctx context.Context, boardID domain.ID, afterID int64, limit int) ([]domain.ActivityEntry, error) {
 	rows, err := r.q(ctx).ListBoardActivitySince(ctx, db.ListBoardActivitySinceParams{
-		BoardID: uuid.UUID(boardID), AfterID: afterID, RowLimit: int32(limit),
+		BoardID: uuid.UUID(boardID), AfterID: afterID, RowLimit: rowLimit(limit),
 	})
 	return mapAll(rows, func(a db.ActivityLog) domain.ActivityEntry { return toActivity(a, "") }), err
 }

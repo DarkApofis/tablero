@@ -20,7 +20,27 @@ type Config struct {
 	JWTSecret       []byte        // JWT_SECRET, required, at least 32 bytes
 	AccessTokenTTL  time.Duration // ACCESS_TOKEN_TTL, default 15m
 	RefreshTokenTTL time.Duration // REFRESH_TOKEN_TTL, default 720h (30 days)
-	CookieSecure    bool          // COOKIE_SECURE, default true
+	// Session cookies (refresh and access): always HttpOnly. CookieSecure is
+	// COOKIE_SECURE (default true); CookieSameSite is COOKIE_SAMESITE: lax
+	// (default), strict or none (needs COOKIE_SECURE=true; for a frontend on
+	// another site); CookieDomain is COOKIE_DOMAIN (default: none, the API's
+	// host only).
+	CookieSecure   bool
+	CookieSameSite string
+	CookieDomain   string
+	// TrustProxy (TRUST_PROXY, default false): the API is behind a reverse
+	// proxy, so the client's IP is the last X-Forwarded-For entry and the
+	// scheme is X-Forwarded-Proto. Leave it off when clients reach the API
+	// directly: they could forge those headers.
+	TrustProxy bool
+	// RateLimit (RATE_LIMIT, default true) limits login, register and guest
+	// attempts per IP and per email (see httpapi.DefaultAuthLimits).
+	RateLimit bool
+	// Open event streams: at most SSEMaxPerUser per user (SSE_MAX_PER_USER,
+	// default 10) and SSEMaxPerBoard per board (SSE_MAX_PER_BOARD, default
+	// 1000), per API instance.
+	SSEMaxPerUser  int
+	SSEMaxPerBoard int
 	// On SIGTERM the API first answers GET /ready with 503 and keeps serving
 	// for ShutdownDelay (SHUTDOWN_DELAY, default 0s), so a load balancer stops
 	// sending it traffic and connections already queued get served. Then it
@@ -94,6 +114,31 @@ func Load() (Config, error) {
 	if cfg.CookieSecure, err = getBool("COOKIE_SECURE", true); err != nil {
 		errs = append(errs, err)
 	}
+	switch cfg.CookieSameSite = strings.ToLower(getenv("COOKIE_SAMESITE", "lax")); cfg.CookieSameSite {
+	case "lax", "strict":
+	case "none":
+		if !cfg.CookieSecure {
+			errs = append(errs, errors.New("COOKIE_SAMESITE=none needs COOKIE_SECURE=true (browsers reject it otherwise)"))
+		}
+	default:
+		errs = append(errs, errors.New("COOKIE_SAMESITE must be lax, strict or none"))
+	}
+	cfg.CookieDomain = os.Getenv("COOKIE_DOMAIN")
+	if d := cfg.CookieDomain; d != "" && (strings.ContainsAny(d, ":/ ") || !strings.Contains(strings.TrimPrefix(d, "."), ".")) {
+		errs = append(errs, fmt.Errorf("COOKIE_DOMAIN must be a domain like tablero.example.com, got %q", d))
+	}
+	if cfg.TrustProxy, err = getBool("TRUST_PROXY", false); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.RateLimit, err = getBool("RATE_LIMIT", true); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.SSEMaxPerUser, err = getPositiveInt("SSE_MAX_PER_USER", 10); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.SSEMaxPerBoard, err = getPositiveInt("SSE_MAX_PER_BOARD", 1000); err != nil {
+		errs = append(errs, err)
+	}
 	if cfg.ShutdownDelay, err = getNonNegativeDuration("SHUTDOWN_DELAY", 0); err != nil {
 		errs = append(errs, err)
 	}
@@ -111,10 +156,8 @@ func Load() (Config, error) {
 	if cfg.DemoGuestTTL, err = getDuration("DEMO_GUEST_TTL", 2*time.Hour); err != nil {
 		errs = append(errs, err)
 	}
-	if v := os.Getenv("DEMO_MAX_GUESTS"); v == "" {
-		cfg.DemoMaxGuests = 100
-	} else if cfg.DemoMaxGuests, err = strconv.Atoi(v); err != nil || cfg.DemoMaxGuests < 1 {
-		errs = append(errs, errors.New("DEMO_MAX_GUESTS must be a positive number"))
+	if cfg.DemoMaxGuests, err = getPositiveInt("DEMO_MAX_GUESTS", 100); err != nil {
+		errs = append(errs, err)
 	}
 
 	if len(errs) > 0 {
@@ -166,6 +209,18 @@ func getNonNegativeDuration(key string, fallback time.Duration) (time.Duration, 
 		return 0, fmt.Errorf("%s must be a duration like 0s or 5s", key)
 	}
 	return d, nil
+}
+
+func getPositiveInt(key string, fallback int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s must be a positive number", key)
+	}
+	return n, nil
 }
 
 func getBool(key string, fallback bool) (bool, error) {

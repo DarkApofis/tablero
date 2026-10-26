@@ -56,7 +56,7 @@ Cómo está hecho (`GET /boards/{id}/events`):
 
 - **Contraseñas** con **argon2id** (parámetros mínimos de OWASP: 19 MiB, 2 iteraciones, 1 hilo) en formato PHC (`$argon2id$v=19$m=…,t=…,p=…$sal$hash`). Los parámetros viajan en el hash, así que se pueden endurecer sin invalidar los existentes. La contraseña debe tener entre 8 y 128 caracteres; el máximo acota el coste de hashear por petición.
 - **Access token:** JWT HS256 de 15 minutos con `sub` = id de usuario e `iss` = `tablero`. Al verificar se exige HS256 (rechaza `alg: none` y otros algoritmos), el emisor y la expiración. El cliente lo envía en `Authorization: Bearer`.
-- **Refresh token:** valor aleatorio de 32 bytes en la cookie `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`, 30 días). En la base solo se guarda su **SHA-256** (tabla `refresh_tokens`), de modo que una fuga de la base no da sesiones válidas. `Path=/auth` evita que viaje en el resto de peticiones.
+- **Refresh token:** valor aleatorio de 32 bytes en la cookie `refresh_token` (`HttpOnly; Path=/auth`, 30 días; `Secure`, `SameSite=Lax` y sin `Domain` por defecto, configurables con `COOKIE_SECURE`, `COOKIE_SAMESITE` y `COOKIE_DOMAIN`). En la base solo se guarda su **SHA-256** (tabla `refresh_tokens`), de modo que una fuga de la base no da sesiones válidas. `Path=/auth` evita que viaje en el resto de peticiones.
 - **Login sin pistas:** cualquier fallo (correo inexistente, contraseña incorrecta, campos vacíos) responde el mismo `401` con el mismo cuerpo, "Correo o contraseña incorrectos". Si el correo no existe se verifica igualmente un hash ficticio, para que el tiempo de respuesta no delate qué cuentas existen.
 - **Renovación con rotación:** `POST /auth/refresh` canjea la cookie por una sesión nueva y el refresh token usado queda revocado. Revocar el viejo e insertar el nuevo es **una sola sentencia** (`UPDATE … RETURNING` dentro de un CTE seguido del `INSERT`), así que dos renovaciones simultáneas con el mismo token no pueden ganar ambas.
 - **Detección de reutilización:** si vuelve un token rotado hace más de 30 s (`auth.ReuseGrace`), se asume robado y se revocan todas las sesiones del usuario (se registra un `WARN`). Dentro de esos 30 s solo responde 401: cubre una respuesta perdida o dos pestañas renovando a la vez, a costa de no detectar un robo usado en esa ventana. El frontend además serializa las renovaciones entre pestañas para no caer en ese caso.
@@ -286,3 +286,30 @@ Cada conexión cuesta unos **28 KiB** (heap y stack) y dos goroutines: la del ha
 - **Lo que la prueba no cubre:**
   - Todos los clientes son el mismo usuario, porque aún no hay invitaciones a un workspace, así que no se prueban ráfagas de `presence.joined` y `presence.left`.
   - Tampoco hay red real ni varias instancias: generador, API y base comparten máquina, así que las latencias son optimistas frente a un despliegue.
+
+## 10. CSRF: token en memoria, comprobación de `Origin` y JSON obligatorio
+
+Un ataque CSRF necesita que el navegador adjunte **solo** las credenciales de la víctima a una petición que el atacante dispara desde su página. Esta API casi no deja nada que adjuntar:
+
+- **Casi todo exige `Authorization: Bearer`.** El access token vive en la memoria de la página (nunca en `localStorage`), y otra página no puede leerlo ni hacer que el navegador lo envíe. Ninguna ruta que cambie datos acepta la cookie `access_token`: solo la usa el stream `GET /boards/{id}/events`, que no cambia nada (`TestAccessCookieOnlyAuthenticatesTheStream`).
+- **Lo que queda son las rutas de sesión,** que cambian estado y pueden autenticarse con cookies:
+  - `POST /auth/refresh` y `POST /auth/logout`, con la cookie `refresh_token`;
+  - `POST /auth/login`, `/auth/register` y `/auth/guest`. No usan cookies, pero un login forzado (*login CSRF*) metería a la víctima en la cuenta del atacante.
+
+Defensas, en capas:
+
+1. **`SameSite=Lax`** en las cookies de sesión: un POST desde otro *sitio* no las lleva.
+2. **Comprobación de origen** en toda petición POST, PUT, PATCH o DELETE (`withCSRFCheck`).
+   - Si trae `Origin`, tiene que estar en `CORS_ORIGINS`.
+   - Sin `Origin`, `Sec-Fetch-Site` no puede ser `cross-site` ni `same-site`.
+   - Si no se cumple, `403 csrf_rejected`.
+   - Cubre lo que `SameSite` no ve, que es otro origen del **mismo sitio** (un subdominio comprometido, otro puerto). Los navegadores actuales mandan `Origin` en todos esos métodos.
+   - Las peticiones sin ninguna de las dos cabeceras vienen de clientes que no son un navegador (curl, scripts, otros servicios). No pueden ser víctimas de CSRF: no tienen la cookie de nadie más.
+3. **JSON obligatorio.** Un cuerpo sin `Content-Type: application/json` recibe `415`.
+   - Un formulario HTML no puede enviar ese tipo.
+   - Un `fetch` de otro origen que lo envíe necesita un *preflight* CORS, que la API solo concede a `CORS_ORIGINS`.
+
+**Por qué no un token CSRF (*synchronizer* o *double submit*):** protegería solo las rutas de sesión, porque el resto ya exige el Bearer. Además obligaría a emitir y renovar un token más y a guardarlo donde JavaScript pueda leerlo. Con la comprobación de origen y el JSON obligatorio, que no necesitan estado y aplican a toda la API, se cubre lo mismo. Esta es la mitigación que recomienda OWASP cuando las cabeceras de origen son fiables, y lo son en todos los navegadores que el frontend soporta.
+
+**Límites:** un cliente que no sea navegador y falsifique `Origin` no gana nada, porque no tiene las cookies de nadie. Si algún día el frontend y la API viven en sitios distintos, `COOKIE_SAMESITE=none` (con `Secure`) quita la capa 1, y la defensa queda en manos de la 2 y la 3. Por eso las tres están siempre activas.
+

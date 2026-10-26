@@ -3,7 +3,8 @@ import { safeNextPath } from "@/lib/session";
 
 /** Message for a failure that is not about the form's fields. */
 export function describeError(err: unknown): string {
-  if (err instanceof ApiError && err.code === "network_error") return err.message;
+  // Both come with a message meant for the visitor (the wait, for rate_limited).
+  if (err instanceof ApiError && (err.code === "network_error" || err.code === "rate_limited")) return err.message;
   return "Algo salió mal. Inténtalo de nuevo en un momento.";
 }
 

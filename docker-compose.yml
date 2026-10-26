@@ -50,6 +50,9 @@ services:
       # Browsers accept Secure cookies on http://localhost.
       COOKIE_SECURE: "true"
       EVENTS_BACKEND: memory
+      # Login/register/guest rate limits (docs/SECURITY.md); RATE_LIMIT=false
+      # turns them off, e.g. for load tests.
+      RATE_LIMIT: ${RATE_LIMIT:-true}
       # Demo mode: "Entrar como invitado" and a periodic reset of the demo
       # data (README, "Datos de demo"). Off unless DEMO_MODE=true.
       DEMO_MODE: ${DEMO_MODE:-false}

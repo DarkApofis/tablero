@@ -5,6 +5,15 @@ linters:
   default: standard
   enable:
     - depguard
+    # Security checks (gosec); exceptions are marked in place with
+    # "#nosec <rule> -- why".
+    - gosec
+
+  exclusions:
+    rules:
+      # As gosec itself does by default: test code is not shipped.
+      - path: _test\.go
+        linters: [gosec]
 
   settings:
     # Dependency rules of the hexagonal architecture (docs/DECISIONS.md #7).

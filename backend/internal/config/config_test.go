@@ -97,3 +97,37 @@ func TestDemoSettings(t *testing.T) {
 		t.Errorf("err = %v, want DEMO_RESET_INTERVAL and DEMO_MAX_GUESTS rejected", err)
 	}
 }
+
+func TestSecuritySettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://tablero:tablero@db:5432/tablero")
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CookieSameSite != "lax" || cfg.CookieDomain != "" || cfg.TrustProxy || !cfg.RateLimit || cfg.SSEMaxPerUser != 10 || cfg.SSEMaxPerBoard != 1000 {
+		t.Errorf("defaults: %+v", cfg)
+	}
+
+	t.Setenv("COOKIE_SAMESITE", "None")
+	t.Setenv("COOKIE_DOMAIN", "tablero.example.com")
+	t.Setenv("TRUST_PROXY", "true")
+	t.Setenv("SSE_MAX_PER_USER", "3")
+	if cfg, err = Load(); err != nil || cfg.CookieSameSite != "none" || cfg.CookieDomain != "tablero.example.com" || !cfg.TrustProxy || cfg.SSEMaxPerUser != 3 {
+		t.Errorf("cfg = %+v, %v", cfg, err)
+	}
+
+	for env, val := range map[string]string{"COOKIE_SECURE": "false", "COOKIE_DOMAIN": "https://tablero.example.com"} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, val)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s=%s with COOKIE_SAMESITE=none was accepted", env, val)
+			}
+		})
+	}
+	t.Setenv("COOKIE_SAMESITE", "loose")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "COOKIE_SAMESITE") {
+		t.Errorf("COOKIE_SAMESITE=loose: %v", err)
+	}
+}

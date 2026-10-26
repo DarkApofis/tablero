@@ -19,6 +19,8 @@ const (
 	argonThreads = 1
 	argonKeyLen  = 32
 	argonSaltLen = 16
+	// maxKeyLen bounds the key length a stored hash may claim.
+	maxKeyLen = 128
 )
 
 var errInvalidHash = errors.New("invalid password hash format")
@@ -65,10 +67,10 @@ func (Argon2id) Verify(password, encoded string) (bool, error) {
 		return false, errInvalidHash
 	}
 	want, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil {
+	if err != nil || len(want) == 0 || len(want) > maxKeyLen {
 		return false, errInvalidHash
 	}
 
-	got := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(want)))
+	got := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(want))) // #nosec G115 -- 1..maxKeyLen, checked above
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

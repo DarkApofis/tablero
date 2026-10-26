@@ -161,6 +161,9 @@ func (e *dbEnv) task(columnID uuid.UUID, title string, pos float64, by testUser)
 
 func (e *dbEnv) do(method, path, body string, as testUser) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if as.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+as.Token)
 	}

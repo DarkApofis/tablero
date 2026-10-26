@@ -125,7 +125,13 @@ Variables disponibles:
 | `CORS_ORIGINS` | `http://localhost:3000` | Orígenes permitidos, separados por comas |
 | `ACCESS_TOKEN_TTL` | `15m` | Vida del access token |
 | `REFRESH_TOKEN_TTL` | `720h` | Vida del refresh token |
-| `COOKIE_SECURE` | `true` | `Secure` en la cookie del refresh token (funciona en `http://localhost`) |
+| `COOKIE_SECURE` | `true` | `Secure` en las cookies de sesión (funciona en `http://localhost`) |
+| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` o `none` (este, solo con `COOKIE_SECURE=true`) |
+| `COOKIE_DOMAIN` | — | `Domain` de las cookies de sesión; sin él, solo el host de la API |
+| `TRUST_PROXY` | `false` | Detrás de un proxy inverso: IP del cliente y esquema desde `X-Forwarded-For` / `X-Forwarded-Proto` |
+| `RATE_LIMIT` | `true` | Límites de intentos en login, registro e invitados |
+| `SSE_MAX_PER_USER` | `10` | Streams en vivo abiertos por usuario (por instancia) |
+| `SSE_MAX_PER_BOARD` | `1000` | Streams en vivo abiertos por tablero (por instancia) |
 | `SHUTDOWN_DELAY` | `0s` | Al recibir SIGTERM, cuánto sigue atendiendo con `/ready` en 503 antes de dejar de aceptar conexiones |
 | `SHUTDOWN_TIMEOUT` | `15s` | Después, cuánto esperan las peticiones en curso antes de cerrarse |
 | `EVENTS_BACKEND` | `memory` | `memory` para una instancia; `postgres` para varias instancias sobre la misma base (eventos y presencia por `LISTEN/NOTIFY`, [decisión 8](docs/DECISIONS.md)) |
@@ -238,8 +244,8 @@ a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/adapters/p
 
 `.github/workflows/ci.yml` corre en cada push a `main` y en cada pull request:
 
-- **Backend:** `go vet`, `golangci-lint` (con las reglas de dependencias de la arquitectura), tests (con Postgres como servicio) y build.
-- **Frontend:** `pnpm lint`, `pnpm test` y `pnpm build`.
+- **Backend:** `go vet`, `golangci-lint` (con las reglas de dependencias de la arquitectura y gosec), `govulncheck`, tests (con Postgres como servicio) y build.
+- **Frontend:** `pnpm lint`, `pnpm audit --prod`, `pnpm test` y `pnpm build`.
 - **E2E:** levanta toda la aplicación con `docker compose up --build --wait` (las imágenes de la API y del frontend), corre `pnpm test:e2e` contra ella y la para con `docker compose stop`, comprobando que la API termina con código 0. Si falla, sube el informe de Playwright y los logs.
 
 ## Estado
@@ -265,6 +271,14 @@ con la API levantada:
 ```sh
 cd backend && go run ./cmd/loadtest -url http://localhost:8080 -clients 500 -duration 30s -rate 10
 ```
+
+Todos los clientes de la prueba son el mismo usuario: levanta la API con
+`SSE_MAX_PER_USER=1000` para que el límite de streams por usuario no la corte.
+
+## Seguridad
+
+El modelo de amenazas, las defensas (rate limiting, CSRF, cabeceras, cookies, límites) y
+cómo correr `govulncheck`, gosec y `pnpm audit` están en [`docs/SECURITY.md`](docs/SECURITY.md).
 
 Pendiente: refresco y cierre de sesión (`/auth/refresh`, `/auth/logout`), invitar
 miembros y la interfaz del

@@ -72,6 +72,7 @@ type eventsHandler struct {
 	// delivery observes, for each live event, the time from its publication
 	// to the flush of its message.
 	delivery *metrics.Histogram
+	open     *streamCounter
 }
 
 // stream: GET /boards/{id}/events, a text/event-stream of the board's
@@ -91,6 +92,13 @@ type eventsHandler struct {
 func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	acc := access(r)
+	release, ok := h.open.acquire(acc.UserID, pathID(r))
+	if !ok {
+		w.Header().Set("Retry-After", "30")
+		WriteError(w, http.StatusTooManyRequests, CodeTooManyStreams, "Demasiadas conexiones en vivo abiertas. Cierra alguna pestaña.")
+		return
+	}
+	defer release()
 	opts := board.StreamOptions{LastEventID: lastEventID(r), ExcludeSelf: excludeSelf(r)}
 	st, err := h.streams.Open(ctx, acc, pathID(r), opts)
 	if err != nil {
@@ -100,6 +108,8 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	defer st.Close()
 
 	rc := http.NewResponseController(w)
+	// The server's ReadTimeout only bounds reading the request, not the
+	// stream (TestStreamOutlivesTheServerReadTimeout).
 	// write sets a fresh deadline before each write: it replaces the server's
 	// WriteTimeout for this connection, which would otherwise cut the stream.
 	write := func(format string, args ...any) error {

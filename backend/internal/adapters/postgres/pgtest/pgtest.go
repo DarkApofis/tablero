@@ -115,7 +115,8 @@ func createDatabase(ctx context.Context, serverURL string) (string, error) {
 		return "", fmt.Errorf("connect to TEST_DATABASE_URL: %w", err)
 	}
 	defer func() { _ = admin.Close(context.Background()) }()
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+	// CREATE/DROP DATABASE take an identifier, not a parameter: quote it.
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
 		return "", fmt.Errorf("create database %s: %w", name, err)
 	}
 	cleanup = func() {
@@ -127,7 +128,7 @@ func createDatabase(ctx context.Context, serverURL string) (string, error) {
 			return
 		}
 		defer func() { _ = c.Close(context.Background()) }()
-		if _, err := c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+		if _, err := c.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
 			fmt.Fprintln(os.Stderr, "drop test database:", err)
 		}
 	}

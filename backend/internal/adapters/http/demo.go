@@ -38,6 +38,9 @@ func (h *demoHandler) startGuest(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, CodeNotFound, "El modo demo no está activo")
 		return
 	}
+	if !h.sessions.allow(w, r, func(l *authLimiter) *limiter { return l.guestIP }) {
+		return
+	}
 	g, err := h.guests.StartGuest(r.Context())
 	switch {
 	case errors.Is(err, demo.ErrGuestLimit):

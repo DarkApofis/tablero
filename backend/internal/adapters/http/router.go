@@ -14,8 +14,17 @@ import (
 )
 
 type Deps struct {
-	CORSOrigins  []string
-	CookieSecure bool
+	// CORSOrigins are the frontends allowed to call the API from a browser,
+	// for CORS and for the CSRF check of state-changing requests.
+	CORSOrigins []string
+	Cookies     CookieOptions
+	// TrustProxy: take the client's IP from X-Forwarded-For and the scheme
+	// from X-Forwarded-Proto (only behind a reverse proxy that sets them).
+	TrustProxy bool
+	// AuthLimits rate-limits login, register and guest sign-in; nil: none.
+	AuthLimits *AuthLimits
+	// StreamLimits caps open event streams per user and per board.
+	StreamLimits StreamLimits
 	// Ready is what GET /ready checks: the database. Once ShuttingDown is
 	// set (on SIGTERM), /ready answers 503 whatever the database says.
 	Ready        Pinger
@@ -41,7 +50,8 @@ type Deps struct {
 }
 
 // NewRouter registers the routes and wraps them in the middleware chain:
-// request id → logging → recover → CORS → mux.
+// request id → logging → recover → security headers → body limit → CORS →
+// CSRF check → mux.
 func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	if d.Metrics == nil {
@@ -52,7 +62,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /ready", handleReady(d.Ready, d.ShuttingDown))
 	mux.Handle("GET /metrics", d.Metrics.Handler())
 
-	ah := &authHandler{auth: d.Auth, cookieSecure: d.CookieSecure}
+	ah := &authHandler{auth: d.Auth, cookies: d.Cookies, trustProxy: d.TrustProxy}
+	if d.AuthLimits != nil {
+		ah.limits = newAuthLimiter(*d.AuthLimits, nil)
+	}
 	mux.HandleFunc("POST /auth/register", ah.register)
 	mux.HandleFunc("POST /auth/login", ah.login)
 	mux.HandleFunc("POST /auth/refresh", ah.refresh)
@@ -91,6 +104,7 @@ func NewRouter(d Deps) http.Handler {
 
 	eh := &eventsHandler{
 		streams: d.Streams, authz: d.Authorizer, heartbeat: d.StreamHeartbeat, writeTimeout: d.StreamWriteTimeout,
+		open: newStreamCounter(d.StreamLimits),
 		delivery: d.Metrics.Histogram("tablero_sse_delivery_seconds",
 			"Time from publishing a board event to flushing it to an SSE client (live events only, not replays).",
 			metrics.DeliveryBuckets),
@@ -118,7 +132,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("DELETE /tasks/{id}", guarded(th.taskWorkspace, domain.ActionEditTasks, th.delete))
 
 	h := withJSONMuxErrors(mux)
+	h = withCSRFCheck(d.CORSOrigins, h)
 	h = withCORS(d.CORSOrigins, h)
+	h = withBodyLimit(h)
+	h = withSecurityHeaders(d.TrustProxy, h)
 	h = withRecover(h)
 	h = withLogging(h)
 	h = withRequestID(h)

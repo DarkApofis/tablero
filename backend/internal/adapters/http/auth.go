@@ -25,7 +25,7 @@ const (
 	accessCookieName = "access_token"
 	accessCookiePath = "/boards"
 
-	msgInvalidCredentials = "Correo o contraseña incorrectos"
+	msgInvalidCredentials = "Correo o contraseña incorrectos" // #nosec G101 -- a message, not a credential
 	msgInvalidSession     = "Sesión inválida o expirada"
 )
 
@@ -49,8 +49,23 @@ type sessionResponse struct {
 }
 
 type authHandler struct {
-	auth         *auth.Service
-	cookieSecure bool
+	auth       *auth.Service
+	cookies    CookieOptions
+	limits     *authLimiter // nil: no rate limits
+	trustProxy bool
+}
+
+// allow takes one attempt of the caller's IP from l; if there is none left it
+// answers 429 and returns false.
+func (h *authHandler) allow(w http.ResponseWriter, r *http.Request, l func(*authLimiter) *limiter) bool {
+	if h.limits == nil {
+		return true
+	}
+	if ok, wait := l(h.limits).Take(limitKey(clientIP(r, h.trustProxy))); !ok {
+		writeRateLimited(w, wait)
+		return false
+	}
+	return true
 }
 
 func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
@@ -59,8 +74,14 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		Password string `json:"password"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if !h.allow(w, r, func(l *authLimiter) *limiter { return l.registerIP }) || !decodeJSON(w, r, &req) {
 		return
+	}
+	if h.limits != nil {
+		if ok, wait := h.limits.registerEmail.Take(domain.NormalizeEmail(req.Email)); !ok {
+			writeRateLimited(w, wait)
+			return
+		}
 	}
 
 	session, err := h.auth.Register(r.Context(), req.Email, req.Name, req.Password)
@@ -84,13 +105,25 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if !h.allow(w, r, func(l *authLimiter) *limiter { return l.loginIP }) || !decodeJSON(w, r, &req) {
 		return
+	}
+	// Per account, only failures count, and they are checked before trying:
+	// a locked account gets 429 whether or not the password is right.
+	email := domain.NormalizeEmail(req.Email)
+	if h.limits != nil {
+		if ok, wait := h.limits.loginEmail.Check(email); !ok {
+			writeRateLimited(w, wait)
+			return
+		}
 	}
 
 	session, err := h.auth.Login(r.Context(), req.Email, req.Password)
 	switch {
 	case errors.Is(err, domain.ErrInvalidCredentials):
+		if h.limits != nil {
+			h.limits.loginEmail.Take(email)
+		}
 		WriteError(w, http.StatusUnauthorized, CodeInvalidCreds, msgInvalidCredentials)
 		return
 	case err != nil:
@@ -165,26 +198,17 @@ func newSessionResponse(s auth.Session) sessionResponse {
 
 // setSessionCookies sets the refresh and access cookies of a new session.
 func (h *authHandler) setSessionCookies(w http.ResponseWriter, s auth.Session) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     refreshCookieName,
-		Value:    s.RefreshToken,
-		Path:     refreshCookiePath,
-		Expires:  s.RefreshExpiresAt,
-		MaxAge:   int(time.Until(s.RefreshExpiresAt).Seconds()),
-		HttpOnly: true,
-		Secure:   h.cookieSecure,
-		SameSite: http.SameSiteLaxMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     accessCookieName,
-		Value:    s.AccessToken,
-		Path:     accessCookiePath,
-		Expires:  s.AccessExpiresAt,
-		MaxAge:   int(time.Until(s.AccessExpiresAt).Seconds()),
-		HttpOnly: true,
-		Secure:   h.cookieSecure,
-		SameSite: http.SameSiteLaxMode,
-	})
+	for _, c := range []struct {
+		name, value, path string
+		expires           time.Time
+	}{
+		{refreshCookieName, s.RefreshToken, refreshCookiePath, s.RefreshExpiresAt},
+		{accessCookieName, s.AccessToken, accessCookiePath, s.AccessExpiresAt},
+	} {
+		cookie := h.cookies.cookie(c.name, c.value, c.path) // #nosec G124 -- HttpOnly always; Secure and SameSite from config (CookieOptions)
+		cookie.Expires, cookie.MaxAge = c.expires, int(time.Until(c.expires).Seconds())
+		http.SetCookie(w, cookie)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 }
 
@@ -193,10 +217,9 @@ func (h *authHandler) clearSessionCookies(w http.ResponseWriter) {
 		{refreshCookieName, refreshCookiePath},
 		{accessCookieName, accessCookiePath},
 	} {
-		http.SetCookie(w, &http.Cookie{
-			Name: c.name, Path: c.path, MaxAge: -1,
-			HttpOnly: true, Secure: h.cookieSecure, SameSite: http.SameSiteLaxMode,
-		})
+		cookie := h.cookies.cookie(c.name, "", c.path) // #nosec G124 -- HttpOnly always; Secure and SameSite from config (CookieOptions)
+		cookie.MaxAge = -1
+		http.SetCookie(w, cookie)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 }

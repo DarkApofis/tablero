@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { onSessionExpired } from "@/lib/api";
 import { getQueryClient } from "@/lib/query-client";
+import { z } from "zod";
+
+// Without eval: zod would otherwise probe `new Function`, which the CSP blocks
+// and reports as a violation (next.config.ts).
+z.config({ jitless: true });
 
 export function Providers({ children }: { children: ReactNode }) {
   const queryClient = getQueryClient();

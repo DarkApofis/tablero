@@ -198,7 +198,8 @@ func (b *EventBus) listen(ctx context.Context) (connected bool, err error) {
 		return false, fmt.Errorf("connect: %w", err)
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
-	if _, err := conn.Exec(ctx, "LISTEN "+Channel); err != nil {
+	// LISTEN takes an identifier, not a parameter; quote it rather than splice it.
+	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{Channel}.Sanitize()); err != nil {
 		return false, fmt.Errorf("listen: %w", err)
 	}
 	b.setConnected(true)
@@ -353,5 +354,5 @@ func (b *EventBus) setConnected(v bool) {
 
 // jitter spreads reconnection attempts of many instances: d ±25%.
 func jitter(d time.Duration) time.Duration {
-	return d*3/4 + rand.N(d/2+1)
+	return d*3/4 + rand.N(d/2+1) // #nosec G404 -- timing jitter, not a secret
 }

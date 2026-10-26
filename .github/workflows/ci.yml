@@ -58,6 +58,9 @@ jobs:
           version: v2.15.0
           working-directory: backend
 
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       - name: Tests
         run: go test -count=1 ./...
 
@@ -90,6 +93,9 @@ jobs:
 
       - name: Lint
         run: pnpm lint
+
+      - name: Audit dependencies
+        run: pnpm audit --prod
 
       - name: Unit tests
         run: pnpm test

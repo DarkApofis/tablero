@@ -72,6 +72,19 @@ describe("LoginForm", () => {
     expect(document.cookie).toContain("tablero_session=1");
   });
 
+  it("says how long to wait when there were too many attempts", async () => {
+    const message = "Demasiados intentos. Vuelve a intentarlo en 90 s.";
+    stubFetch({ "POST /auth/login": () => ({ status: 429, body: { error: { code: "rate_limited", message } } }) });
+    const { email, password } = renderForm();
+
+    await userEvent.type(email, "ana@example.com");
+    await userEvent.type(password, "otra-vez");
+    await submit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(replace).not.toHaveBeenCalled();
+  });
+
   it("never follows a next that leaves the site", async () => {
     window.history.replaceState(null, "", "/login?next=//evil.example/");
     stubFetch({ "POST /auth/login": () => ({ status: 200, body: { user, access_token: "tok", token_type: "Bearer", expires_in: 900 } }) });

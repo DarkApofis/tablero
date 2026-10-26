@@ -30,6 +30,10 @@ import (
 // use cases as ports, and the use cases to the HTTP adapter. Wiring is manual
 // on purpose; there is no DI framework.
 
+var sameSite = map[string]http.SameSite{
+	"lax": http.SameSiteLaxMode, "strict": http.SameSiteStrictMode, "none": http.SameSiteNoneMode,
+}
+
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
@@ -119,12 +123,20 @@ func run() error {
 		slog.Info("demo mode on", "reset_every", cfg.DemoResetInterval.String(), "guest_ttl", cfg.DemoGuestTTL.String())
 	}
 
+	var authLimits *httpapi.AuthLimits
+	if cfg.RateLimit {
+		authLimits = &httpapi.DefaultAuthLimits
+	}
+
 	var shuttingDown atomic.Bool
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: httpapi.NewRouter(httpapi.Deps{
 			CORSOrigins:  cfg.CORSOrigins,
-			CookieSecure: cfg.CookieSecure,
+			Cookies:      httpapi.CookieOptions{Secure: cfg.CookieSecure, SameSite: sameSite[cfg.CookieSameSite], Domain: cfg.CookieDomain},
+			TrustProxy:   cfg.TrustProxy,
+			AuthLimits:   authLimits,
+			StreamLimits: httpapi.StreamLimits{PerUser: cfg.SSEMaxPerUser, PerBoard: cfg.SSEMaxPerBoard},
 			Ready:        pool,
 			ShuttingDown: &shuttingDown,
 			Auth:         authService,
@@ -138,7 +150,12 @@ func run() error {
 			Guests:       guests,
 			Metrics:      reg,
 		}),
+		// Slow clients cannot hold connections open: headers within 5s, the
+		// whole request (bodies are small, see httpapi.maxRequestBytes) within
+		// 15s. It does not cut event streams, which outlive the request read.
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 		// Caps ordinary responses; the event stream replaces it per write on its
 		// own connection (http.ResponseController), so streams are not cut.
 		WriteTimeout: 30 * time.Second,

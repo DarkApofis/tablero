@@ -26,12 +26,18 @@ export async function apiCall<T>(method: string, path: string, token: string | n
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-export async function tokenFor(user: SeedUser) {
-  const session = await apiCall<{ access_token: string }>("POST", "/auth/login", null, {
-    email: user.email,
-    password: user.password,
-  });
-  return session.access_token;
+// One login per user per test process: the API rate-limits logins per IP.
+const tokens = new Map<string, Promise<string>>();
+
+export function tokenFor(user: SeedUser): Promise<string> {
+  let token = tokens.get(user.email);
+  if (!token) {
+    token = apiCall<{ access_token: string }>("POST", "/auth/login", null, { email: user.email, password: user.password }).then(
+      (s) => s.access_token,
+    );
+    tokens.set(user.email, token);
+  }
+  return token;
 }
 
 /**

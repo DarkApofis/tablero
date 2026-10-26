@@ -14,6 +14,7 @@ type Person struct {
 	Role     domain.Role
 }
 
+// #nosec G101 -- public demo credentials, documented in the README on purpose.
 var People = []Person{
 	{Key: "ana", Email: "ana@estudionube.example", Name: "Ana Torres", Password: "nube-admin-demo", Role: domain.RoleAdmin},
 	{Key: "bruno", Email: "bruno@estudionube.example", Name: "Bruno Díaz", Password: "nube-miembro-demo", Role: domain.RoleMember},

@@ -8,7 +8,8 @@ info:
     **Autenticación.** Las rutas protegidas exigen `Authorization: Bearer <access_token>`,
     un JWT HS256 de corta duración (15 min por defecto) que devuelven `/auth/register`
     y `/auth/login`. Esas dos rutas también fijan un refresh token en la cookie
-    `refresh_token` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`) y el mismo access
+    `refresh_token` (`HttpOnly; Path=/auth`; `Secure`, `SameSite` y `Domain` según
+    `COOKIE_SECURE`, `COOKIE_SAMESITE` y `COOKIE_DOMAIN`) y el mismo access
     token en la cookie `access_token` (`Path=/boards`), que **solo** acepta
     `GET /boards/{id}/events` porque `EventSource` no puede enviar cabeceras; el resto
     de rutas exige la cabecera `Authorization`. Cuando el access token caduca,
@@ -20,6 +21,17 @@ info:
     añaden `error.fields` con un mensaje por campo. Cualquier ruta puede responder
     `500 internal_error`; una ruta inexistente responde `404 not_found` y un método
     no soportado `405 method_not_allowed` (con cabecera `Allow`).
+
+    **Peticiones que cambian estado** (POST, PUT, PATCH, DELETE). Si traen `Origin`,
+    tiene que ser uno de `CORS_ORIGINS`; sin `Origin`, `Sec-Fetch-Site` no puede ser
+    `cross-site` ni `same-site`. Si no, `403 csrf_rejected` (docs/DECISIONS.md, decisión 10).
+    Los cuerpos deben ser `Content-Type: application/json` (si no, `415
+    unsupported_media_type`) de 256 KiB como mucho (si no, `413 body_too_large`).
+
+    **Límites.** Login, registro y entrada de invitado tienen límites por IP y por
+    correo: al pasarlos responden `429 rate_limited` con `Retry-After` (segundos).
+    Cada usuario puede tener `SSE_MAX_PER_USER` streams abiertos y cada board
+    `SSE_MAX_PER_BOARD`; uno más recibe `429 too_many_streams`. Ver docs/SECURITY.md.
 
     **Autorización por workspace.** Toda ruta bajo un workspace (miembros, boards,
     columnas, tareas, actividad) se autoriza con el rol del usuario en ese workspace:
@@ -197,6 +209,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /auth/login:
@@ -232,6 +245,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /auth/guest:
@@ -266,7 +280,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: Ya hay `DEMO_MAX_GUESTS` invitados activos (`guest_limit`).
+          description: |
+            Ya hay `DEMO_MAX_GUESTS` invitados activos (`guest_limit`), o esta IP pasó su
+            límite de invitados (`rate_limited`, con `Retry-After`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -703,6 +719,13 @@ paths:
                 data: {"last_event_id":57}
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: |
+            El usuario ya tiene `SSE_MAX_PER_USER` streams abiertos en esta instancia, o el
+            board `SSE_MAX_PER_BOARD` (`too_many_streams`, con `Retry-After`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
   /boards/{id}/presence:
     parameters: [{ $ref: "#/components/parameters/ID" }]
@@ -1128,6 +1151,16 @@ components:
       schema: { type: string }
 
   responses:
+    RateLimited:
+      description: |
+        Demasiados intentos desde esta IP o contra este correo (`rate_limited`). La
+        cabecera `Retry-After` dice cuántos segundos esperar.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     InvalidJSON:
       description: El cuerpo no es JSON válido (`invalid_json`).
       content:
@@ -1272,6 +1305,11 @@ components:
         - shutting_down
         - guest_limit
         - demo_unavailable
+        - rate_limited
+        - csrf_rejected
+        - too_many_streams
+        - body_too_large
+        - unsupported_media_type
         - internal_error
 
     TaskConflict:

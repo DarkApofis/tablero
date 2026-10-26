@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -88,6 +89,11 @@ func pgCode(err error) string {
 		return pgErr.Code
 	}
 	return ""
+}
+
+// rowLimit is a LIMIT for sqlc's int32 parameter: n, kept within 0..MaxInt32.
+func rowLimit(n int) int32 {
+	return int32(min(max(n, 0), math.MaxInt32)) // #nosec G115 -- clamped to int32's range
 }
 
 // notFound maps "no rows" to the given domain error.

@@ -18,7 +18,7 @@ func NewActivity(pool *pgxpool.Pool) *Activity { return &Activity{conn{pool}} }
 
 func (r *Activity) ListBoardActivity(ctx context.Context, boardID domain.ID, beforeID int64, limit int) ([]domain.ActivityEntry, error) {
 	rows, err := r.q(ctx).ListBoardActivity(ctx, db.ListBoardActivityParams{
-		BoardID: uuid.UUID(boardID), BeforeID: beforeID, RowLimit: int32(limit),
+		BoardID: uuid.UUID(boardID), BeforeID: beforeID, RowLimit: rowLimit(limit),
 	})
 	return mapAll(rows, func(row db.ListBoardActivityRow) domain.ActivityEntry {
 		return domain.ActivityEntry{

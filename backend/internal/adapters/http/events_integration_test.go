@@ -330,10 +330,69 @@ func TestEventStreamAuth(t *testing.T) {
 func TestAccessCookieOnlyAuthenticatesTheStream(t *testing.T) {
 	f := newTaskFixture(t)
 	req := httptest.NewRequest("POST", "/columns/"+f.todo.String()+"/tasks", strings.NewReader(`{"title":"CSRF"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: f.ana.Token})
 	rec := httptest.NewRecorder()
 	f.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized || f.titles(f.todo) != "" {
 		t.Errorf("cookie-only write: %d, tasks %q", rec.Code, f.titles(f.todo))
+	}
+}
+
+func TestStreamLimitsPerUserAndBoard(t *testing.T) {
+	f := newTaskFixture(t)
+	deps := f.deps
+	deps.StreamLimits = StreamLimits{PerUser: 1, PerBoard: 2}
+	srv := httptest.NewServer(NewRouter(deps))
+	t.Cleanup(srv.Close)
+	status := func(as testUser) (int, string) {
+		req, _ := http.NewRequest("GET", srv.URL+"/boards/"+f.board.String()+"/events", nil)
+		req.AddCookie(&http.Cookie{Name: accessCookieName, Value: as.Token})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		resp, err := srv.Client().Do(req.WithContext(ctx))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var b errorBody
+		if resp.StatusCode != http.StatusOK {
+			_ = json.NewDecoder(resp.Body).Decode(&b)
+		}
+		return resp.StatusCode, b.Error.Code
+	}
+
+	first := f.openStream(srv, f.board, f.ana)
+	if code, errCode := status(f.ana); code != http.StatusTooManyRequests || errCode != CodeTooManyStreams {
+		t.Errorf("ana's second stream: %d %s", code, errCode)
+	}
+	f.openStream(srv, f.board, f.admin)
+	if code, _ := status(f.viewer); code != http.StatusTooManyRequests {
+		t.Errorf("third stream on a board limited to 2: %d", code)
+	}
+	// Closing a stream frees its place.
+	first.cancel()
+	waitFor(t, "ana's stream to be released", func() bool {
+		code, _ := status(f.viewer)
+		return code == http.StatusOK
+	})
+}
+
+// The server's ReadTimeout bounds reading requests; a stream must outlive it.
+func TestStreamOutlivesTheServerReadTimeout(t *testing.T) {
+	f := newTaskFixture(t)
+	srv := httptest.NewUnstartedServer(NewRouter(f.deps))
+	srv.Config.ReadTimeout = 200 * time.Millisecond
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	s := f.openStream(srv, f.board, f.viewer)
+	if fr := s.next(t, time.Second); fr != "retry: 3000" {
+		t.Fatalf("first frame %q", fr)
+	}
+	time.Sleep(600 * time.Millisecond) // three read timeouts
+	f.createTask(f.todo, "Después del ReadTimeout", f.ana)
+	if _, typ, _ := parseEvent(t, s.next(t, 2*time.Second)); typ != domain.EventTaskCreated {
+		t.Errorf("got %s, want task.created", typ)
 	}
 }

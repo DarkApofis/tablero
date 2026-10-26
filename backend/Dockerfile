@@ -5,7 +5,7 @@
 # `docker compose run --rm --entrypoint /app/seed api` loads the demo data.
 
 # --- build: static binaries (no cgo, so no libc to depend on) ---
-FROM golang:1.26-alpine AS build
+FROM golang:1.26.10-alpine AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath
 COPY go.mod go.sum ./

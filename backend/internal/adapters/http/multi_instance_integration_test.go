@@ -125,6 +125,7 @@ func (in *apiInstance) presence(t *testing.T, f *taskFixture) []string {
 func (f *taskFixture) createTaskOn(in *apiInstance, title string, as testUser) {
 	f.t.Helper()
 	req, _ := http.NewRequest("POST", in.srv.URL+"/columns/"+f.todo.String()+"/tasks", strings.NewReader(`{"title":"`+title+`"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+as.Token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

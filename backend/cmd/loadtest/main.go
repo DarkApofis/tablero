@@ -6,7 +6,8 @@
 //
 // It registers a throwaway user and builds its own workspace and board.
 // Every client is that same user (the API has no invitations yet), so
-// presence stays at one person; the cost per connection is the same.
+// presence stays at one person; the cost per connection is the same. Run
+// the API with SSE_MAX_PER_USER at least -clients, or it refuses the rest.
 //
 // Latency is measured on the client: from just before sending the move
 // (PATCH /tasks/{id}/move) to the moment each client reads its task.moved.

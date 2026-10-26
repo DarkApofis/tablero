@@ -4,7 +4,9 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"mime"
 	"net/http"
 )
 
@@ -19,7 +21,7 @@ const (
 	CodeDemoUnavailable  = "demo_unavailable"
 	CodeInvalidJSON      = "invalid_json"
 	CodeValidation       = "validation_error"
-	CodeInvalidCreds     = "invalid_credentials"
+	CodeInvalidCreds     = "invalid_credentials" // #nosec G101 -- an error code, not a credential
 	CodeEmailTaken       = "email_taken"
 	CodeUnauthorized     = "unauthorized"
 	CodeForbidden        = "forbidden"
@@ -28,9 +30,12 @@ const (
 	CodeVersionConflict  = "version_conflict"
 	CodeNeighborsChanged = "neighbors_changed"
 	CodeLabelExists      = "label_exists"
+	CodeRateLimited      = "rate_limited"
+	CodeCSRFRejected     = "csrf_rejected"
+	CodeTooManyStreams   = "too_many_streams"
+	CodeBodyTooLarge     = "body_too_large"
+	CodeUnsupportedMedia = "unsupported_media_type"
 )
-
-const maxBodyBytes = 1 << 20
 
 type errorBody struct {
 	Error errorDetail `json:"error"`
@@ -72,11 +77,21 @@ func internalError(w http.ResponseWriter, r *http.Request, op string, err error)
 	WriteError(w, http.StatusInternalServerError, CodeInternal, "internal server error")
 }
 
-// decodeJSON reads a JSON body of at most 1 MiB into dst. On failure it has
-// already written a 400 and returns false.
+// decodeJSON reads a JSON body of at most maxRequestBytes into dst. The body
+// must be declared application/json: an HTML form cannot send that, nor can
+// another site's script without a CORS preflight (docs/DECISIONS.md #10). On
+// failure it has already written the error and returns false.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		WriteError(w, http.StatusUnsupportedMediaType, CodeUnsupportedMedia, "El cuerpo debe ser JSON (Content-Type: application/json)")
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			WriteError(w, http.StatusRequestEntityTooLarge, CodeBodyTooLarge, "El cuerpo de la petición es demasiado grande")
+			return false
+		}
 		WriteError(w, http.StatusBadRequest, CodeInvalidJSON, "El cuerpo de la petición no es JSON válido")
 		return false
 	}

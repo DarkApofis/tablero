@@ -684,7 +684,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "demo_unavailable" | "internal_error";
+        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "demo_unavailable" | "rate_limited" | "csrf_rejected" | "too_many_streams" | "body_too_large" | "unsupported_media_type" | "internal_error";
         TaskConflict: {
             error: components["schemas"]["ErrorDetail"];
             current: components["schemas"]["Task"];
@@ -1028,6 +1028,19 @@ export interface components {
         };
     };
     responses: {
+        /**
+         * @description Demasiados intentos desde esta IP o contra este correo (`rate_limited`). La
+         *     cabecera `Retry-After` dice cuántos segundos esperar.
+         */
+        RateLimited: {
+            headers: {
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description El cuerpo no es JSON válido (`invalid_json`). */
         InvalidJSON: {
             headers: {
@@ -1352,6 +1365,7 @@ export interface operations {
                 };
             };
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1395,6 +1409,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1431,7 +1446,10 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Ya hay `DEMO_MAX_GUESTS` invitados activos (`guest_limit`). */
+            /**
+             * @description Ya hay `DEMO_MAX_GUESTS` invitados activos (`guest_limit`), o esta IP pasó su
+             *     límite de invitados (`rate_limited`, con `Retry-After`).
+             */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -1922,6 +1940,18 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            /**
+             * @description El usuario ya tiene `SSE_MAX_PER_USER` streams abiertos en esta instancia, o el
+             *     board `SSE_MAX_PER_BOARD` (`too_many_streams`, con `Retry-After`).
+             */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             500: components["responses"]["InternalError"];
         };
     };
