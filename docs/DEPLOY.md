@@ -78,7 +78,8 @@ Fuentes: [Render, plan gratuito](https://render.com/docs/free), [Neon, precios](
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | `/api` | El cliente llama a la API en su propio origen. Se incrusta en el build |
 | `API_PROXY_TARGET` | `https://tablero-api-XXXX.onrender.com` (la URL de Render, sin barra final) | Adónde reenvía Vercel `/api/*`. Solo la ve el servidor |
-| `ENABLE_EXPERIMENTAL_COREPACK` | `1` | Vercel usa la versión de pnpm de `package.json` (`pnpm@11.9.0`) |
+
+El build del frontend usa `pnpm@11.9.0` y Node 24 explícitamente: `frontend/vercel.json` fija los comandos de instalación y de build, y `engines.node` en `frontend/package.json` fija Node. Con Root Directory `frontend`, Vercel no siempre detecta `packageManager`, y su pnpm por defecto falla con Node moderno (`ERR_INVALID_THIS`).
 
 Los «fijos» de la API viven en `render.yaml` y se cambian con un commit. Los secretos no están en el repositorio: Render y Vercel los guardan en sus paneles. Ninguna variable de Vercel es secreta.
 
@@ -181,7 +182,8 @@ En [UptimeRobot](https://uptimerobot.com) (o [cron-job.org](https://cron-job.org
 3. En **Environment Variables**, añade:
    - `NEXT_PUBLIC_API_URL` = `/api`
    - `API_PROXY_TARGET` = `https://tablero-api-XXXX.onrender.com`, tu URL de Render, sin barra final.
-   - `ENABLE_EXPERIMENTAL_COREPACK` = `1`
+   
+   No cambies los comandos de *install* ni de *build*: los fija `frontend/vercel.json`.
 4. **Deploy.** Al terminar, apunta la URL de producción (`https://tablero.vercel.app` o similar). Si no es `https://tablero.vercel.app`, cambia `CORS_ORIGINS` en **Render → tablero-api → Environment** a esa URL exacta. Render redespliega solo.
 
 ### 7. Verificar de punta a punta
