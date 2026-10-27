@@ -1,6 +1,9 @@
 node_modules/
 .next/
 .env
+# Any other env file (.env.local, .env.neon…) holds credentials too.
+.env.*
+!.env.example
 bin/
 
 # Tests del frontend
@@ -10,3 +13,4 @@ frontend/playwright-report/
 
 # Configuración local de Claude Code
 .claude/settings.local.json
+.neon

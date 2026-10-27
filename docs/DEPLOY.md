@@ -9,7 +9,7 @@ navegador ──HTTPS──▶ api.<tu dominio> (Render, TLS)          monitor e
                 tablero-api (Docker, instancia gratuita 0.1 CPU / 512 MB, Frankfurt)
                         │ TLS
                         ▼
-                Neon (Postgres 16 gratuito, AWS Frankfurt)
+                Neon (Postgres 18 gratuito, AWS Frankfurt)
 ```
 
 ## Qué implica el plan gratuito
@@ -107,7 +107,7 @@ Hecho: `DarkApofis/tablero`, con el CI en verde.
 ### 2. Crear la base en Neon
 
 1. Crea una cuenta en [neon.com](https://neon.com). No pide tarjeta.
-2. **New Project:** nombre `tablero`, Postgres **16** (el que usan Compose y el CI), región **AWS Europe Central 1 (Frankfurt)**.
+2. **New Project:** nombre `tablero`, región **AWS Europe Central 1 (Frankfurt)**. El proyecto actual es `noisy-dawn-97517345`, con Postgres 18. Compose y el CI usan Postgres 16; las migraciones se probaron también en 18 (ver más abajo).
 3. En **Connect**, elige la rama `production` (o `main`), la base `neondb` (o crea `tablero`) y **desactiva «Connection pooling»**. La URL directa no lleva `-pooler` en el host.
 4. Copia la URL y añádele al final `&pool_max_conn_idle_time=4m`. Queda así:
 
@@ -118,6 +118,15 @@ Hecho: `DarkApofis/tablero`, con el CI en verde.
    Si Neon añade también `&channel_binding=require`, déjalo.
 
 Guárdala; es el valor de `DATABASE_URL` en el paso siguiente. No la pegues en el chat ni en el repositorio.
+
+**Con la CLI de Neon** (lo que se hizo para este proyecto): `neon.ts` y `package.json` en la raíz declaran el proyecto, y `.neon` (ignorado) lo enlaza. Para volver a traer las URLs:
+
+```sh
+npm i -g neon@latest && neon login
+neon env pull        # escribe DATABASE_URL (pooler), DATABASE_URL_UNPOOLED (directa) y NEON_BRANCH
+```
+
+Ojo: escribe en `.env` si existe, y ese archivo es tu configuración de desarrollo local, que apunta a la base de Compose. Lleva esas variables a `.env.neon` (ignorado por git) y deja `.env` como estaba. Para Render, la `DATABASE_URL` es `DATABASE_URL_UNPOOLED` más `&pool_max_conn_idle_time=4m`.
 
 ### 3. Crear el servicio desde el Blueprint
 
