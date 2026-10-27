@@ -153,13 +153,20 @@ func writeRateLimited(w http.ResponseWriter, wait time.Duration) {
 }
 
 // clientIP is the address the request came from: the connection's peer, or,
-// behind a trusted reverse proxy, the last X-Forwarded-For entry (the one the
-// proxy added; earlier ones are whatever the client sent).
-func clientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
-			parts := strings.Split(xff[len(xff)-1], ",")
-			if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
+// behind proxyHops trusted reverse proxies (0: none), the X-Forwarded-For
+// entry that many from the end. Each proxy appends the address it saw, so
+// that one was added by the first of them; earlier entries are whatever the
+// client sent. With fewer entries than hops, the first one.
+func clientIP(r *http.Request, proxyHops int) string {
+	if proxyHops > 0 {
+		var entries []string
+		for _, v := range r.Header.Values("X-Forwarded-For") {
+			for e := range strings.SplitSeq(v, ",") {
+				entries = append(entries, strings.TrimSpace(e))
+			}
+		}
+		if len(entries) > 0 {
+			if ip := net.ParseIP(entries[max(len(entries)-proxyHops, 0)]); ip != nil {
 				return ip.String()
 			}
 		}

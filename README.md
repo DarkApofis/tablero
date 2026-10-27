@@ -129,6 +129,8 @@ Variables disponibles:
 | `COOKIE_SAMESITE` | `lax` | `lax`, `strict` o `none` (este, solo con `COOKIE_SECURE=true`) |
 | `COOKIE_DOMAIN` | — | `Domain` de las cookies de sesión; sin él, solo el host de la API |
 | `TRUST_PROXY` | `false` | Detrás de un proxy inverso: IP del cliente y esquema desde `X-Forwarded-For` / `X-Forwarded-Proto` |
+| `TRUST_PROXY_HOPS` | `1` | Cuántos proxies añaden entradas a `X-Forwarded-For` (2 con Vercel delante de Render) |
+| `COOKIE_PATH_PREFIX` | — | Prefijo de la ruta de las cookies cuando un proxy sirve la API bajo una ruta (`/api` con el proxy de Vercel) |
 | `RATE_LIMIT` | `true` | Límites de intentos en login, registro e invitados |
 | `SSE_MAX_PER_USER` | `10` | Streams en vivo abiertos por usuario (por instancia) |
 | `SSE_MAX_PER_BOARD` | `1000` | Streams en vivo abiertos por tablero (por instancia) |

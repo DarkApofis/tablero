@@ -50,6 +50,7 @@ Modelo de amenazas breve de Tablero: qué se protege, frente a quién, cómo y q
 - **CSP con `'unsafe-inline'` en `script-src`.** Next.js incrusta scripts para hidratar las páginas generadas en el build. Usar *nonces* obligaría a renderizar cada página en cada petición y perder el prerenderizado. Se compensa sin código de terceros, con React escapando y con `connect-src` limitado a la API, lo que impide sacar datos a otro sitio. `default-src`, `object-src`, `base-uri`, `form-action` y `frame-ancestors` son estrictos.
 - **Límites en memoria, por instancia.** Con N instancias tras un balanceador, los límites efectivos se multiplican por N. Si se escala, el siguiente paso es un almacén compartido (Postgres o Redis).
 - **Bloqueo de una cuenta por terceros.** Quien conozca un correo puede gastar sus 10 fallos, y su dueño queda a un intento cada 90 s mientras dure el ataque. Es el precio del límite por cuenta.
+- **API pública detrás del proxy de Vercel** (despliegue gratuito, `docs/DEPLOY.md`). Quien llame a la URL de Render directamente puede elegir, con `X-Forwarded-For`, la IP que le atribuye el límite por IP. Los límites por correo, las cookies y la protección CSRF no dependen de ella.
 - **`TRUST_PROXY` mal puesto.** Activado sin proxy delante, cualquiera falsifica su IP con `X-Forwarded-For` y esquiva el límite por IP. Desactivado detrás de un proxy, todos los clientes comparten la IP del proxy.
 - **`/metrics` sin autenticación:** debe quedar en la red interna (decisión 9).
 - **El modo demo publica credenciales,** también la del admin. No debe activarse sobre una base con datos reales (README, «Modo demo»).
@@ -91,6 +92,8 @@ cd ../frontend && pnpm audit --prod
 | `COOKIE_SAMESITE` | `lax` | `lax`, `strict` o `none` (este, solo con `COOKIE_SECURE=true`, para un frontend en otro sitio) |
 | `COOKIE_DOMAIN` | — | `Domain` de las cookies; sin él, solo el host de la API |
 | `TRUST_PROXY` | `false` | Tomar IP y esquema de `X-Forwarded-For` / `X-Forwarded-Proto`; solo detrás de un proxy que los fije |
+| `TRUST_PROXY_HOPS` | `1` | Proxies que añaden a `X-Forwarded-For`; la IP del cliente es la entrada que está a esa distancia del final |
+| `COOKIE_PATH_PREFIX` | — | Prefijo de la ruta de las cookies (`/api` cuando el frontend sirve la API en su origen) |
 | `RATE_LIMIT` | `true` | Límites de login, registro e invitados |
 | `SSE_MAX_PER_USER` / `SSE_MAX_PER_BOARD` | `10` / `1000` | Streams abiertos por instancia |
 

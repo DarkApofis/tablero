@@ -44,7 +44,8 @@ test("dos personas editan la misma tarea a la vez y la segunda ve el aviso de co
   // without depending on timing.
   let letBrunoThrough!: () => void;
   const anaSaved = new Promise<void>((resolve) => (letBrunoThrough = resolve));
-  await bruno.route(`${API_URL}/tasks/${task.id}`, async (route) => {
+  // Any origin: the API directly, or behind the frontend's /api proxy.
+  await bruno.route(`**/tasks/${task.id}`, async (route) => {
     if (route.request().method() === "PATCH") await anaSaved;
     await route.continue();
   });

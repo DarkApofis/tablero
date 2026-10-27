@@ -16,7 +16,8 @@ test("las cabeceras de seguridad están y la CSP no bloquea nada de la app", asy
   const res = await page.goto("/login");
   const headers = res!.headers();
   expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
-  expect(headers["content-security-policy"]).toContain(`connect-src 'self' ${new URL(API_URL).origin}`);
+  // 'self', plus the API's origin unless the frontend proxies it under /api.
+  expect(headers["content-security-policy"]).toMatch(/connect-src 'self'( https?:\/\/\S+)?;/);
   expect(headers["x-content-type-options"]).toBe("nosniff");
   expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
   expect(headers["x-powered-by"]).toBeUndefined();

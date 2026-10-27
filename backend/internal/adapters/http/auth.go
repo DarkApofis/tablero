@@ -49,10 +49,10 @@ type sessionResponse struct {
 }
 
 type authHandler struct {
-	auth       *auth.Service
-	cookies    CookieOptions
-	limits     *authLimiter // nil: no rate limits
-	trustProxy bool
+	auth      *auth.Service
+	cookies   CookieOptions
+	limits    *authLimiter // nil: no rate limits
+	proxyHops int          // see clientIP
 }
 
 // allow takes one attempt of the caller's IP from l; if there is none left it
@@ -61,7 +61,7 @@ func (h *authHandler) allow(w http.ResponseWriter, r *http.Request, l func(*auth
 	if h.limits == nil {
 		return true
 	}
-	if ok, wait := l(h.limits).Take(limitKey(clientIP(r, h.trustProxy))); !ok {
+	if ok, wait := l(h.limits).Take(limitKey(clientIP(r, h.proxyHops))); !ok {
 		writeRateLimited(w, wait)
 		return false
 	}

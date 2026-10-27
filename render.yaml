@@ -1,7 +1,8 @@
 # Render Blueprint: the API (Docker image from backend/) on a free instance in
 # Frankfurt. The database is Neon's free Postgres (also Frankfurt), outside
-# Render: a free Render Postgres is deleted after 30-44 days. The frontend is
-# deployed separately.
+# Render: a free Render Postgres is deleted after 30-44 days. The frontend is on
+# Vercel, which also serves this API under its own origin (/api/* → here), so
+# the session cookies are first-party.
 # Step-by-step guide, variables and migration strategy: docs/DEPLOY.md.
 
 services:
@@ -35,7 +36,7 @@ services:
       - key: JWT_SECRET
         generateValue: true # 256 random bits, generated once
       - key: CORS_ORIGINS
-        sync: false # https://app.<your domain>
+        sync: false # the frontend's origin: https://tablero.vercel.app (or the one Vercel gives)
       - key: MIGRATE_ON_START
         value: "true"
       - key: MIGRATE_LOCK_TIMEOUT
@@ -45,9 +46,13 @@ services:
       - key: COOKIE_SECURE
         value: "true"
       - key: COOKIE_SAMESITE
-        value: lax # app.<domain> and api.<domain> are the same site
+        value: lax # the browser only talks to the Vercel origin: first-party cookies
+      - key: COOKIE_PATH_PREFIX
+        value: /api # Vercel forwards /api/* here: cookies go to /api/auth, /api/boards
       - key: TRUST_PROXY
-        value: "true" # behind Render's proxy (verify it: docs/DEPLOY.md, step 6)
+        value: "true"
+      - key: TRUST_PROXY_HOPS
+        value: "2" # Vercel → Render; verify it: docs/DEPLOY.md, step 7
       - key: EVENTS_BACKEND
         value: memory # one instance
       - key: SHUTDOWN_DELAY

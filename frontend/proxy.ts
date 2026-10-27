@@ -23,6 +23,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Everything but Next's assets and static files.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
+  // Everything but Next's assets, static files and /api (the API itself, forwarded
+  // by next.config.ts: its calls must not be sent to the login page).
+  matcher: ["/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
 };

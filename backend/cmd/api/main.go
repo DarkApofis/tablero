@@ -146,9 +146,12 @@ func run() error {
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: httpapi.NewRouter(httpapi.Deps{
-			CORSOrigins:  cfg.CORSOrigins,
-			Cookies:      httpapi.CookieOptions{Secure: cfg.CookieSecure, SameSite: sameSite[cfg.CookieSameSite], Domain: cfg.CookieDomain},
+			CORSOrigins: cfg.CORSOrigins,
+			Cookies: httpapi.CookieOptions{
+				Secure: cfg.CookieSecure, SameSite: sameSite[cfg.CookieSameSite], Domain: cfg.CookieDomain, PathPrefix: cfg.CookiePathPrefix,
+			},
 			TrustProxy:   cfg.TrustProxy,
+			ProxyHops:    cfg.TrustProxyHops,
 			AuthLimits:   authLimits,
 			StreamLimits: httpapi.StreamLimits{PerUser: cfg.SSEMaxPerUser, PerBoard: cfg.SSEMaxPerBoard},
 			Ready:        pool,

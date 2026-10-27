@@ -136,7 +136,7 @@ func TestEventStreamDeliversBoardChanges(t *testing.T) {
 		t.Fatalf("status = %d", s.resp.StatusCode)
 	}
 	for k, want := range map[string]string{
-		"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+		"Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
 	} {
 		if got := s.resp.Header.Get(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)

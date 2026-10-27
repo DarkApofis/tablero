@@ -227,12 +227,20 @@ func TestClientIP(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.1.2.3:4444"
 	req.Header.Add("X-Forwarded-For", "1.1.1.1, 203.0.113.5")
-	if got := clientIP(req, false); got != "10.1.2.3" {
+	if got := clientIP(req, 0); got != "10.1.2.3" {
 		t.Errorf("untrusted: %s", got)
 	}
-	// The last entry is the one our proxy added; the first is the client's word.
-	if got := clientIP(req, true); got != "203.0.113.5" {
-		t.Errorf("trusted: %s", got)
+	// One proxy: the last entry is the one it added; the first is the client's word.
+	if got := clientIP(req, 1); got != "203.0.113.5" {
+		t.Errorf("one hop: %s", got)
+	}
+	// Two (Vercel → Render): the first one put the client second to last.
+	req.Header.Add("X-Forwarded-For", "76.76.21.21")
+	if got := clientIP(req, 2); got != "203.0.113.5" {
+		t.Errorf("two hops, header repeated: %s", got)
+	}
+	if got := clientIP(req, 9); got != "1.1.1.1" {
+		t.Errorf("more hops than entries: %s", got)
 	}
 	if got := limitKey("2001:db8:1:2:aaaa::1"); got != limitKey("2001:db8:1:2:bbbb::9") || got != "2001:db8:1:2::/64" {
 		t.Errorf("IPv6 /64: %s", got)
@@ -241,8 +249,9 @@ func TestClientIP(t *testing.T) {
 
 func TestCookieOptions(t *testing.T) {
 	h, _ := secureRouter(t, func(d *Deps) {
-		d.Cookies = CookieOptions{Secure: true, SameSite: http.SameSiteStrictMode, Domain: "tablero.example.com"}
+		d.Cookies = CookieOptions{Secure: true, SameSite: http.SameSiteStrictMode, Domain: "tablero.example.com", PathPrefix: "/api"}
 	})
+	wantPath := map[string]string{refreshCookieName: "/api/auth", accessCookieName: "/api/boards"}
 	rec := send(h, "POST", "/auth/register", `{"email":"c@example.com","name":"C","password":"correcta-123"}`)
 	logout := send(h, "POST", "/auth/logout", "")
 	for _, r := range []*httptest.ResponseRecorder{rec, logout} {
@@ -251,7 +260,7 @@ func TestCookieOptions(t *testing.T) {
 			t.Fatalf("cookies = %v", cookies)
 		}
 		for _, c := range cookies {
-			if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Domain != "tablero.example.com" {
+			if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Domain != "tablero.example.com" || c.Path != wantPath[c.Name] {
 				t.Errorf("%s: %+v", c.Name, c)
 			}
 		}

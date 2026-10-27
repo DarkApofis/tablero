@@ -21,8 +21,10 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
-  // Every screen's data comes from the API, with credentials: open that connection early.
-  preconnect(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080", { crossOrigin: "use-credentials" });
+  // Every screen's data comes from the API, with credentials: open that connection
+  // early. Not needed when the API is on this site, behind /api.
+  const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+  if (/^https?:\/\//.test(api)) preconnect(api, { crossOrigin: "use-credentials" });
   return (
     <html
       lang="es"

@@ -74,6 +74,10 @@ type CookieOptions struct {
 	Secure   bool
 	SameSite http.SameSite // zero: Lax
 	Domain   string        // empty: the API's host only
+	// PathPrefix goes before each cookie's path when a proxy serves the API
+	// under a prefix (the frontend forwarding /api/* here): "/api" makes the
+	// refresh cookie's path /api/auth, where the browser sends it.
+	PathPrefix string
 }
 
 func (o CookieOptions) cookie(name, value, path string) *http.Cookie {
@@ -83,7 +87,7 @@ func (o CookieOptions) cookie(name, value, path string) *http.Cookie {
 	}
 	// #nosec G124 -- HttpOnly always; Secure comes from COOKIE_SECURE (true by
 	// default; false only for plain-http development); SameSite from COOKIE_SAMESITE.
-	return &http.Cookie{Name: name, Value: value, Path: path, Domain: o.Domain, HttpOnly: true, Secure: o.Secure, SameSite: sameSite}
+	return &http.Cookie{Name: name, Value: value, Path: o.PathPrefix + path, Domain: o.Domain, HttpOnly: true, Secure: o.Secure, SameSite: sameSite}
 }
 
 // StreamLimits cap open event streams on this instance; zero means no cap.

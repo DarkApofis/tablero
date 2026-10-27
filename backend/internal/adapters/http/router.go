@@ -20,7 +20,9 @@ type Deps struct {
 	Cookies     CookieOptions
 	// TrustProxy: take the client's IP from X-Forwarded-For and the scheme
 	// from X-Forwarded-Proto (only behind a reverse proxy that sets them).
+	// ProxyHops is how many proxies append to X-Forwarded-For (default 1).
 	TrustProxy bool
+	ProxyHops  int
 	// AuthLimits rate-limits login, register and guest sign-in; nil: none.
 	AuthLimits *AuthLimits
 	// StreamLimits caps open event streams per user and per board.
@@ -62,7 +64,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /ready", handleReady(d.Ready, d.ShuttingDown))
 	mux.Handle("GET /metrics", d.Metrics.Handler())
 
-	ah := &authHandler{auth: d.Auth, cookies: d.Cookies, trustProxy: d.TrustProxy}
+	ah := &authHandler{auth: d.Auth, cookies: d.Cookies}
+	if d.TrustProxy {
+		ah.proxyHops = max(d.ProxyHops, 1)
+	}
 	if d.AuthLimits != nil {
 		ah.limits = newAuthLimiter(*d.AuthLimits, nil)
 	}

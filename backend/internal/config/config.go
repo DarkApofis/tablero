@@ -28,11 +28,19 @@ type Config struct {
 	CookieSecure   bool
 	CookieSameSite string
 	CookieDomain   string
+	// CookiePathPrefix (COOKIE_PATH_PREFIX, default none) goes before the
+	// cookies' paths (/auth, /boards) when a proxy serves the API under a
+	// prefix: "/api" when the frontend forwards /api/* to it.
+	CookiePathPrefix string
 	// TrustProxy (TRUST_PROXY, default false): the API is behind a reverse
 	// proxy, so the client's IP is the last X-Forwarded-For entry and the
 	// scheme is X-Forwarded-Proto. Leave it off when clients reach the API
 	// directly: they could forge those headers.
 	TrustProxy bool
+	// TrustProxyHops (TRUST_PROXY_HOPS, default 1) is how many proxies append
+	// to X-Forwarded-For in front of the API: the client's IP is that many
+	// entries from the end (2 for Vercel → Render).
+	TrustProxyHops int
 	// RateLimit (RATE_LIMIT, default true) limits login, register and guest
 	// attempts per IP and per email (see httpapi.DefaultAuthLimits).
 	RateLimit bool
@@ -138,6 +146,13 @@ func Load() (Config, error) {
 	}
 	if cfg.TrustProxy, err = getBool("TRUST_PROXY", false); err != nil {
 		errs = append(errs, err)
+	}
+	if cfg.TrustProxyHops, err = getPositiveInt("TRUST_PROXY_HOPS", 1); err != nil {
+		errs = append(errs, err)
+	}
+	cfg.CookiePathPrefix = os.Getenv("COOKIE_PATH_PREFIX")
+	if p := cfg.CookiePathPrefix; p != "" && (!strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") || strings.ContainsAny(p, " ;,")) {
+		errs = append(errs, fmt.Errorf("COOKIE_PATH_PREFIX must be a path like /api (leading slash, no trailing one), got %q", p))
 	}
 	if cfg.RateLimit, err = getBool("RATE_LIMIT", true); err != nil {
 		errs = append(errs, err)

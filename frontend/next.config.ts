@@ -1,8 +1,16 @@
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV !== "production";
-// The only other origin the pages talk to (fetch and EventSource).
-const apiOrigin = new URL(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080").origin;
+// The API as the browser reaches it (lib/api.ts): another origin, or a path on
+// this one ("/api") that the rewrite below forwards to API_PROXY_TARGET.
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+// The only other origin the pages talk to (fetch and EventSource), if any.
+const apiOrigin = /^https?:\/\//.test(apiUrl) ? new URL(apiUrl).origin : "";
+// Server-side only: where /api/* goes. Set it to serve the API from this origin,
+// so its cookies are first-party (a frontend on *.vercel.app and an API on
+// *.onrender.com are different sites; browsers that block third-party cookies
+// would drop the session). docs/DEPLOY.md.
+const apiProxyTarget = process.env.API_PROXY_TARGET?.replace(/\/$/, "");
 
 // Content-Security-Policy (docs/SECURITY.md). Scripts and styles come from this
 // origin only; 'unsafe-inline' stays for the inline scripts Next.js emits to
@@ -16,7 +24,7 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
-  `connect-src 'self' ${apiOrigin}${isDev ? " ws:" : ""}`,
+  `connect-src 'self'${apiOrigin ? ` ${apiOrigin}` : ""}${isDev ? " ws:" : ""}`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -51,6 +59,12 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
+  },
+  // /api/auth/login → API_PROXY_TARGET/auth/login, streams included (the API's
+  // 25 s heartbeat keeps a proxied stream open). The API's own security headers
+  // come back with its responses.
+  async rewrites() {
+    return apiProxyTarget ? [{ source: "/api/:path*", destination: `${apiProxyTarget}/:path*` }] : [];
   },
 };
 

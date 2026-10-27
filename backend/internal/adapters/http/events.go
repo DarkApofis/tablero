@@ -151,7 +151,9 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream")
-	hdr.Set("Cache-Control", "no-cache")
+	// no-transform: proxies on the way (Next.js rewrites, CDNs) must not compress
+	// the stream, which would hold events in their buffers.
+	hdr.Set("Cache-Control", "no-cache, no-transform")
 	hdr.Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
 	w.WriteHeader(http.StatusOK)
 	if err := write("retry: %d\n\n", streamRetryMillis); err != nil {

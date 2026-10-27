@@ -7,7 +7,22 @@ export type User = Schemas["User"];
 export type Session = Schemas["Session"];
 export type ErrorCode = Schemas["ErrorCode"];
 
+/**
+ * The API as the browser reaches it: an absolute URL ("http://localhost:8080"), or
+ * a path on this site ("/api") when the frontend forwards it to the API itself
+ * (next.config.ts, API_PROXY_TARGET), which keeps the API's cookies first-party.
+ */
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+
+/**
+ * The URL of an API path. Unlike `new URL(path, base)`, it keeps the base's own
+ * path: with base "/api", "/auth/refresh" is "/api/auth/refresh".
+ */
+export function apiUrl(path: string, base: string = API_URL): URL {
+  const url = new URL(base, typeof window === "undefined" ? "http://localhost" : window.location.origin);
+  url.pathname = url.pathname.replace(/\/$/, "") + path;
+  return url;
+}
 
 /* ---------- Session ---------- */
 
@@ -67,7 +82,7 @@ async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
 async function renew(): Promise<boolean> {
   let res: Response;
   try {
-    res = await fetch(new URL("/auth/refresh", API_URL), {
+    res = await fetch(apiUrl("/auth/refresh"), {
       method: "POST",
       headers: { Accept: "application/json" },
       credentials: "include",
@@ -211,7 +226,7 @@ function buildUrl(template: string, opts: RawOptions): string {
     if (value === undefined) throw new Error(`Falta el parámetro de ruta "${name}" en ${template}`);
     return encodeURIComponent(value);
   });
-  const url = new URL(path, API_URL);
+  const url = apiUrl(path);
   for (const [key, value] of Object.entries(opts.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }

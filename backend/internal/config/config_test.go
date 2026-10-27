@@ -134,3 +134,24 @@ func TestSecuritySettings(t *testing.T) {
 		t.Errorf("COOKIE_SAMESITE=loose: %v", err)
 	}
 }
+
+func TestProxySettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://tablero:tablero@db:5432/tablero")
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+
+	cfg, err := Load()
+	if err != nil || cfg.TrustProxyHops != 1 || cfg.CookiePathPrefix != "" {
+		t.Fatalf("defaults: %+v, %v", cfg, err)
+	}
+	t.Setenv("TRUST_PROXY_HOPS", "2")
+	t.Setenv("COOKIE_PATH_PREFIX", "/api")
+	if cfg, err = Load(); err != nil || cfg.TrustProxyHops != 2 || cfg.CookiePathPrefix != "/api" {
+		t.Errorf("cfg = %+v, %v", cfg, err)
+	}
+	for _, bad := range []string{"api", "/api/", "/a b"} {
+		t.Setenv("COOKIE_PATH_PREFIX", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("COOKIE_PATH_PREFIX=%q accepted", bad)
+		}
+	}
+}

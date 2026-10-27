@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { activityFromEvent, activityKeys, addActivity } from "./activity";
-import { API_URL, refreshSession } from "./api";
+import { apiUrl, refreshSession } from "./api";
 import { applyEvent, DOMAIN_EVENTS, eventTouchesTask, type PresenceUser, type StreamEvent } from "./board-events";
 import { boardKeys, type BoardDetail } from "./boards";
 import { workspaceKeys, type Member } from "./workspaces";
@@ -103,7 +103,7 @@ export function useBoardEvents(boardId: string, { enabled }: { enabled: boolean 
     };
 
     const open = () => {
-      const url = new URL(`/boards/${boardId}/events`, API_URL);
+      const url = apiUrl(`/boards/${boardId}/events`);
       // A new EventSource doesn't carry Last-Event-ID; continue where the last one left off.
       if (lastEventId) url.searchParams.set("last_event_id", lastEventId);
       const es = new EventSource(url, { withCredentials: true });
