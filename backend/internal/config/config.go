@@ -41,6 +41,15 @@ type Config struct {
 	// 1000), per API instance.
 	SSEMaxPerUser  int
 	SSEMaxPerBoard int
+
+	// MigrateOnStart (MIGRATE_ON_START, default false): apply the pending
+	// migrations of MigrationsDir (MIGRATIONS_DIR, default "migrations")
+	// before listening, for platforms with no pre-deploy step. A statement
+	// waits at most MigrateLockTimeout (MIGRATE_LOCK_TIMEOUT, default 5s) for
+	// a table lock.
+	MigrateOnStart     bool
+	MigrationsDir      string
+	MigrateLockTimeout time.Duration
 	// On SIGTERM the API first answers GET /ready with 503 and keeps serving
 	// for ShutdownDelay (SHUTDOWN_DELAY, default 0s), so a load balancer stops
 	// sending it traffic and connections already queued get served. Then it
@@ -137,6 +146,13 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 	if cfg.SSEMaxPerBoard, err = getPositiveInt("SSE_MAX_PER_BOARD", 1000); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.MigrateOnStart, err = getBool("MIGRATE_ON_START", false); err != nil {
+		errs = append(errs, err)
+	}
+	cfg.MigrationsDir = getenv("MIGRATIONS_DIR", "migrations")
+	if cfg.MigrateLockTimeout, err = getDuration("MIGRATE_LOCK_TIMEOUT", 5*time.Second); err != nil {
 		errs = append(errs, err)
 	}
 	if cfg.ShutdownDelay, err = getNonNegativeDuration("SHUTDOWN_DELAY", 0); err != nil {

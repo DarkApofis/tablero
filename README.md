@@ -132,6 +132,8 @@ Variables disponibles:
 | `RATE_LIMIT` | `true` | Límites de intentos en login, registro e invitados |
 | `SSE_MAX_PER_USER` | `10` | Streams en vivo abiertos por usuario (por instancia) |
 | `SSE_MAX_PER_BOARD` | `1000` | Streams en vivo abiertos por tablero (por instancia) |
+| `MIGRATE_ON_START` | `false` | Aplicar las migraciones al arrancar, antes de abrir el puerto (para plataformas sin paso de pre-deploy, ver `docs/DEPLOY.md`) |
+| `MIGRATIONS_DIR` / `MIGRATE_LOCK_TIMEOUT` | `migrations` / `5s` | Dónde están las migraciones y cuánto puede esperar una por un bloqueo de tabla |
 | `SHUTDOWN_DELAY` | `0s` | Al recibir SIGTERM, cuánto sigue atendiendo con `/ready` en 503 antes de dejar de aceptar conexiones |
 | `SHUTDOWN_TIMEOUT` | `15s` | Después, cuánto esperan las peticiones en curso antes de cerrarse |
 | `EVENTS_BACKEND` | `memory` | `memory` para una instancia; `postgres` para varias instancias sobre la misma base (eventos y presencia por `LISTEN/NOTIFY`, [decisión 8](docs/DECISIONS.md)) |
@@ -277,8 +279,8 @@ Todos los clientes de la prueba son el mismo usuario: levanta la API con
 
 ## Despliegue
 
-El backend se despliega en Render con Postgres administrado (`render.yaml`). Las variables,
-la estrategia de migraciones y el paso a paso están en [`docs/DEPLOY.md`](docs/DEPLOY.md).
+El backend se despliega gratis en Render (`render.yaml`) con Postgres administrado en Neon.
+Las variables, la estrategia de migraciones y el paso a paso están en [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Seguridad
 

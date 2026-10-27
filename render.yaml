@@ -1,42 +1,28 @@
-# Render Blueprint: the API (Docker image from backend/) and its managed
-# Postgres, both in Frankfurt. The frontend is deployed separately.
+# Render Blueprint: the API (Docker image from backend/) on a free instance in
+# Frankfurt. The database is Neon's free Postgres (also Frankfurt), outside
+# Render: a free Render Postgres is deleted after 30-44 days. The frontend is
+# deployed separately.
 # Step-by-step guide, variables and migration strategy: docs/DEPLOY.md.
-
-databases:
-  - name: tablero-db
-    region: frankfurt
-    # Paid: a free Render Postgres expires after a few weeks.
-    plan: 0.1c-256mb
-    postgresMajorVersion: "16" # the version Compose and CI use
-    databaseName: tablero
-    user: tablero
-    # No access from the internet: only services on Render's private network.
-    ipAllowList: []
 
 services:
   - type: web
     name: tablero-api
     runtime: docker
     region: frankfurt
-    # Paid: the free plan sleeps after 15 minutes without requests, which
-    # would close every open SSE stream and make the next visitor wait.
-    plan: 0.5c-512mb
-    # One instance: live events go through its memory (EVENTS_BACKEND).
-    # For more, switch EVENTS_BACKEND to postgres first (docs/DEPLOY.md).
-    numInstances: 1
+    # Free: sleeps after 15 minutes without inbound requests (an open SSE
+    # stream alone does not count), so an external monitor calls /health
+    # every 10 minutes (docs/DEPLOY.md, step 5). One always-on free service
+    # uses ~744 of the workspace's 750 free hours a month.
+    plan: free
     dockerContext: ./backend
     dockerfilePath: ./backend/Dockerfile
-    # Applies pending migrations on a separate instance, after the build and
-    # before the new version starts, while the old one keeps serving: they
-    # must be backward compatible (docs/DEPLOY.md). If it fails, the deploy
-    # stops and the old version stays.
-    preDeployCommand: /app/migrate
-    # Liveness, not /ready: the API only starts listening once it has reached
-    # the database, and a database blip must not get it restarted.
+    # Free instances have no preDeployCommand: the API applies pending
+    # migrations itself before listening (MIGRATE_ON_START), while the
+    # previous version keeps serving, so they must be backward compatible.
+    # Liveness, not /ready: the API only listens once migrated and connected,
+    # a database blip must not get it restarted, and the monitor's calls must
+    # not wake the database up.
     healthCheckPath: /health
-    # SIGTERM → SIGKILL. The API drains in SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT
-    # (5s + 20s), below this.
-    maxShutdownDelaySeconds: 30
     # Deploy a commit only once CI passes on it.
     autoDeployTrigger: checksPass
     buildFilter:
@@ -45,13 +31,15 @@ services:
         - render.yaml
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: tablero-db
-          property: connectionString # private network URL
+        sync: false # Neon's direct (not pooled) URL, plus &pool_max_conn_idle_time=4m
       - key: JWT_SECRET
         generateValue: true # 256 random bits, generated once
       - key: CORS_ORIGINS
-        sync: false # asked when the Blueprint is created: https://app.<your domain>
+        sync: false # https://app.<your domain>
+      - key: MIGRATE_ON_START
+        value: "true"
+      - key: MIGRATE_LOCK_TIMEOUT
+        value: 5s
       - key: PORT
         value: "8080"
       - key: COOKIE_SECURE
@@ -59,15 +47,13 @@ services:
       - key: COOKIE_SAMESITE
         value: lax # app.<domain> and api.<domain> are the same site
       - key: TRUST_PROXY
-        value: "true" # behind Render's proxy (verify it: docs/DEPLOY.md, step 5)
+        value: "true" # behind Render's proxy (verify it: docs/DEPLOY.md, step 6)
       - key: EVENTS_BACKEND
-        value: memory
+        value: memory # one instance
       - key: SHUTDOWN_DELAY
         value: 5s
       - key: SHUTDOWN_TIMEOUT
         value: 20s
-      - key: MIGRATE_LOCK_TIMEOUT
-        value: 5s
       - key: RATE_LIMIT
         value: "true"
       - key: DEMO_MODE

@@ -68,6 +68,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Without a pre-deploy step (Render's free instances), migrate here,
+	// before listening: the health check only passes once it is done, and the
+	// previous version keeps serving meanwhile, hence backward compatibility.
+	if cfg.MigrateOnStart {
+		applied, err := postgres.Migrate(ctx, cfg.DatabaseURL, cfg.MigrationsDir, cfg.MigrateLockTimeout)
+		if err != nil {
+			return fmt.Errorf("migrations failed, not starting: %w", err)
+		}
+		for _, m := range applied {
+			slog.Info("migration applied", "version", m.Version, "file", m.File, "duration", m.Duration.String())
+		}
+		slog.Info("migrations up to date", "applied", len(applied))
+	}
+
 	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("cannot reach the database at DATABASE_URL, not starting: %w", err)

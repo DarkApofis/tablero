@@ -69,6 +69,9 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.MigrateOnStart || cfg.MigrationsDir != "migrations" || cfg.MigrateLockTimeout != 5*time.Second {
+		t.Errorf("migration defaults: %+v", cfg)
+	}
 	if cfg.DemoMode || cfg.DemoResetInterval != time.Hour || cfg.DemoGuestTTL != 2*time.Hour || cfg.DemoMaxGuests != 100 {
 		t.Errorf("demo defaults: %+v", cfg)
 	}
