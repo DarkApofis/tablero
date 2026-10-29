@@ -13,10 +13,45 @@ export const workspaceKeys = {
   boards: (id: string) => ["workspaces", id, "boards"] as const,
 };
 
+// One request feeds both the list and the quota (each hook selects its part).
+const workspacesQuery = {
+  queryKey: workspaceKeys.all,
+  queryFn: ({ signal }: { signal: AbortSignal }) => api.get("/workspaces", { signal }),
+};
+
 export function useWorkspaces() {
+  return useQuery({ ...workspacesQuery, select: (r) => r.workspaces });
+}
+
+/** How many workspaces the user created, out of the most they may. */
+export function useWorkspaceQuota() {
   return useQuery({
-    queryKey: workspaceKeys.all,
-    queryFn: ({ signal }) => api.get("/workspaces", { signal }).then((r) => r.workspaces),
+    ...workspacesQuery,
+    // null from an API older than the quota (briefly, while a deploy rolls out).
+    select: (r) =>
+      typeof r.max_created === "number"
+        ? { created: r.created, max: r.max_created, canCreate: r.created < r.max_created }
+        : null,
+  });
+}
+
+export function useCreateWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.post("/workspaces", { body: { name } }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: workspaceKeys.all, exact: true }),
+  });
+}
+
+/** The columns every board made here starts with; admins can add more. */
+export const DEFAULT_COLUMNS = ["Pendiente", "En progreso", "Hecho"];
+
+export function useCreateBoard(workspaceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      api.post("/workspaces/{id}/boards", { path: { id: workspaceId }, body: { name, columns: DEFAULT_COLUMNS } }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: workspaceKeys.boards(workspaceId) }),
   });
 }
 

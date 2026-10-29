@@ -13,7 +13,12 @@ import (
 // Ports.
 
 type WorkspaceRepository interface {
-	Create(ctx context.Context, name string) (domain.Workspace, error)
+	// Create stores a workspace created by createdBy.
+	Create(ctx context.Context, name string, createdBy domain.ID) (domain.Workspace, error)
+	// CountCreatedBy is how many existing workspaces userID created.
+	CountCreatedBy(ctx context.Context, userID domain.ID) (int64, error)
+	// LockCreator serializes userID's workspace creations until the transaction ends.
+	LockCreator(ctx context.Context, userID domain.ID) error
 	AddMember(ctx context.Context, workspaceID, userID domain.ID, role domain.Role) error
 	ListForUser(ctx context.Context, userID domain.ID) ([]domain.WorkspaceSummary, error)
 	// Role returns domain.ErrNotMember for non-members and unknown workspaces alike.
@@ -90,7 +95,8 @@ func NewService(repo WorkspaceRepository, tx TxManager, events EventPublisher) *
 	return &Service{repo: repo, tx: tx, events: events}
 }
 
-// Create makes a workspace with the creator as its only admin.
+// Create makes a workspace with the creator as its only admin, unless they
+// already created domain.MaxCreatedWorkspaces (domain.ErrWorkspaceLimit).
 func (s *Service) Create(ctx context.Context, creatorID domain.ID, name string) (domain.WorkspaceSummary, error) {
 	name, err := domain.WorkspaceName(name)
 	if err != nil {
@@ -98,8 +104,17 @@ func (s *Service) Create(ctx context.Context, creatorID domain.ID, name string) 
 	}
 	var ws domain.Workspace
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
-		var err error
-		if ws, err = s.repo.Create(ctx, name); err != nil {
+		if err := s.repo.LockCreator(ctx, creatorID); err != nil {
+			return fmt.Errorf("lock creator: %w", err)
+		}
+		created, err := s.repo.CountCreatedBy(ctx, creatorID)
+		if err != nil {
+			return fmt.Errorf("count created workspaces: %w", err)
+		}
+		if created >= domain.MaxCreatedWorkspaces {
+			return domain.ErrWorkspaceLimit
+		}
+		if ws, err = s.repo.Create(ctx, name, creatorID); err != nil {
 			return fmt.Errorf("create workspace: %w", err)
 		}
 		return s.repo.AddMember(ctx, ws.ID, creatorID, domain.RoleAdmin)
@@ -108,6 +123,12 @@ func (s *Service) Create(ctx context.Context, creatorID domain.ID, name string) 
 		return domain.WorkspaceSummary{}, err
 	}
 	return domain.WorkspaceSummary{Workspace: ws, Role: domain.RoleAdmin, MemberCount: 1}, nil
+}
+
+// CreatedCount is how many workspaces userID created, out of
+// domain.MaxCreatedWorkspaces.
+func (s *Service) CreatedCount(ctx context.Context, userID domain.ID) (int64, error) {
+	return s.repo.CountCreatedBy(ctx, userID)
 }
 
 // ListForUser returns the workspaces userID belongs to, with their role and member count.

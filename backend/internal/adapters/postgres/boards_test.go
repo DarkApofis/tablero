@@ -34,7 +34,7 @@ func newBoardFixture(t *testing.T) *boardFixture {
 		tx: postgres.NewTxManager(pool),
 	}
 	f.user, _ = postgres.NewUsers(pool).Create(ctx, uniqueEmail("ana"), "Ana", "x")
-	ws, err := postgres.NewWorkspaces(pool).Create(ctx, "Equipo")
+	ws, err := postgres.NewWorkspaces(pool).Create(ctx, "Equipo", f.user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -243,6 +243,8 @@ RETURNING (SELECT workspace_id FROM member) AS default_workspace_id;
 COMMIT;
 ```
 
+Ese workspace se crea por SQL sin `created_by`, así que no cuenta para tu límite de 2 workspaces propios.
+
 Pon ese id en **Render → tablero-api → Environment → `DEFAULT_WORKSPACE_ID`** y guarda (Render redespliega). En los logs verás `"new accounts join the default workspace as members"`.
 
 Para meter también a las cuentas que ya existían (opcional):

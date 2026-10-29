@@ -224,7 +224,11 @@ export interface paths {
         /** Workspaces del usuario, con su rol y el número de miembros */
         get: operations["listWorkspaces"];
         put?: never;
-        /** Crear un workspace (el creador queda como admin) */
+        /**
+         * Crear un workspace (el creador queda como admin)
+         * @description Cada usuario puede crear como máximo 2 workspaces (`max_created` en `GET /workspaces`).
+         *     Pertenecer a otros, por defecto o porque le añadieron, no cuenta.
+         */
         post: operations["createWorkspace"];
         delete?: never;
         options?: never;
@@ -684,7 +688,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "demo_unavailable" | "rate_limited" | "csrf_rejected" | "too_many_streams" | "body_too_large" | "unsupported_media_type" | "internal_error";
+        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "workspace_limit" | "demo_unavailable" | "rate_limited" | "csrf_rejected" | "too_many_streams" | "body_too_large" | "unsupported_media_type" | "internal_error";
         TaskConflict: {
             error: components["schemas"]["ErrorDetail"];
             current: components["schemas"]["Task"];
@@ -1587,6 +1591,10 @@ export interface operations {
                 content: {
                     "application/json": {
                         workspaces: components["schemas"]["Workspace"][];
+                        /** @description Cuántos workspaces ha creado el usuario. */
+                        created: number;
+                        /** @description Cuántos puede crear como máximo. */
+                        max_created: number;
                     };
                 };
             };
@@ -1618,6 +1626,15 @@ export interface operations {
             };
             400: components["responses"]["InvalidJSON"];
             401: components["responses"]["Unauthorized"];
+            /** @description Ya creó el máximo de workspaces (`workspace_limit`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             422: components["responses"]["ValidationError"];
             500: components["responses"]["InternalError"];
         };
@@ -1754,7 +1771,11 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NameInput"];
+                "application/json": {
+                    name: string;
+                    /** @description Columnas con las que nace el board, en orden, en la misma transacción. */
+                    columns?: string[];
+                };
             };
         };
         responses: {

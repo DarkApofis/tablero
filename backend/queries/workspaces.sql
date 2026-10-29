@@ -1,7 +1,15 @@
 -- name: CreateWorkspace :one
-INSERT INTO workspaces (name)
-VALUES ($1)
+INSERT INTO workspaces (name, created_by)
+VALUES ($1, $2)
 RETURNING *;
+
+-- name: CountWorkspacesCreatedBy :one
+SELECT count(*) FROM workspaces WHERE created_by = $1;
+
+-- LockWorkspaceCreator serializes, per user, creating workspaces until the
+-- transaction ends, so two at once cannot both pass the limit.
+-- name: LockWorkspaceCreator :exec
+SELECT pg_advisory_xact_lock(hashtextextended('workspace_creator:' || CAST(sqlc.arg(user_id) AS uuid)::text, 0));
 
 -- name: WorkspaceExists :one
 SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1);

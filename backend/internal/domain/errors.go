@@ -35,6 +35,8 @@ var (
 	ErrForbidden = errors.New("action not allowed for role")
 	// ErrLastAdmin: the change would leave the workspace without an admin.
 	ErrLastAdmin = errors.New("workspace must keep at least one admin")
+	// ErrWorkspaceLimit: the user already created MaxCreatedWorkspaces.
+	ErrWorkspaceLimit = errors.New("workspace limit reached")
 
 	// ErrEmailTaken: an account with that email already exists.
 	ErrEmailTaken = errors.New("email already registered")

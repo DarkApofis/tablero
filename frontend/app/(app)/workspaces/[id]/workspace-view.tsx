@@ -1,11 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { CreateForm } from "@/components/ui/create-form";
 import { Notice } from "@/components/ui/notice";
 import { ApiError } from "@/lib/api";
-import { roleLabel } from "@/lib/roles";
-import { useBoards, useWorkspaces } from "@/lib/workspaces";
+import { canManageBoards, roleLabel } from "@/lib/roles";
+import { DEFAULT_COLUMNS, useBoards, useCreateBoard, useWorkspaces } from "@/lib/workspaces";
 
 const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
 const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text";
@@ -14,6 +17,10 @@ const created = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", 
 export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   const boards = useBoards(workspaceId);
   const workspace = useWorkspaces().data?.find((w) => w.id === workspaceId);
+  const createBoard = useCreateBoard(workspaceId);
+  const router = useRouter();
+  const [creating, setCreating] = useState(false);
+  const isAdmin = canManageBoards(workspace?.role);
 
   if (boards.isPending) return <WorkspaceSkeleton />;
 
@@ -50,18 +57,45 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
             {boards.data.length === 1 ? "1 tablero" : `${boards.data.length} tableros`}
           </p>
         </div>
-        <Link
-          href={`/workspaces/${workspaceId}/members`}
-          className={`inline-flex h-[30px] items-center rounded-[10px] border border-border-strong bg-raised px-3 text-[12.5px] font-semibold ${focusRing}`}
-        >
-          Miembros{workspace && ` · ${workspace.member_count}`}
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/workspaces/${workspaceId}/members`}
+            className={`inline-flex h-[30px] items-center rounded-[10px] border border-border-strong bg-raised px-3 text-[12.5px] font-semibold ${focusRing}`}
+          >
+            Miembros{workspace && ` · ${workspace.member_count}`}
+          </Link>
+          {isAdmin && !creating && (
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              Nuevo tablero
+            </Button>
+          )}
+        </div>
       </div>
+
+      {isAdmin && creating && (
+        <div className="flex flex-col gap-1.5 rounded-2xl border border-border bg-surface p-5">
+          <CreateForm
+            label="Nombre del tablero"
+            submitLabel="Crear tablero"
+            autoFocus
+            onCancel={() => setCreating(false)}
+            onCreate={async (name) => {
+              const board = await createBoard.mutateAsync(name);
+              router.push(`/boards/${board.id}`);
+            }}
+          />
+          <p className="text-[12.5px] text-muted">
+            Empieza con las columnas {DEFAULT_COLUMNS.map((c) => `«${c}»`).join(", ")}. Podrás añadir más desde el tablero.
+          </p>
+        </div>
+      )}
 
       {boards.data.length === 0 ? (
         <div className="flex min-h-[180px] flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-8 text-center">
           <p className="font-medium">Este workspace todavía no tiene tableros</p>
-          <p className="text-[13.5px] text-muted">Cuando un admin cree uno, aparecerá aquí.</p>
+          <p className="text-[13.5px] text-muted">
+            {isAdmin ? "Crea el primero con «Nuevo tablero»." : "Cuando un admin cree uno, aparecerá aquí."}
+          </p>
         </div>
       ) : (
         <ul className={grid}>

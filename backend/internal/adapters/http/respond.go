@@ -30,6 +30,7 @@ const (
 	CodeVersionConflict  = "version_conflict"
 	CodeNeighborsChanged = "neighbors_changed"
 	CodeLabelExists      = "label_exists"
+	CodeWorkspaceLimit   = "workspace_limit"
 	CodeRateLimited      = "rate_limited"
 	CodeCSRFRejected     = "csrf_rejected"
 	CodeTooManyStreams   = "too_many_streams"

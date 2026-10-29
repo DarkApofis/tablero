@@ -13,3 +13,7 @@ export const roleLabel = (role: Role) => roles.find((r) => r.value === role)?.la
 // Mirrors the API's permission table, only to decide what to show. The API
 // authorizes every request on its own.
 export const canManageMembers = (role: Role | undefined) => role === "admin";
+/** Create, rename and delete boards and columns. */
+export const canManageBoards = (role: Role | undefined) => role === "admin";
+/** Create, move, edit and delete tasks. */
+export const canEditTasks = (role: Role | undefined) => role === "admin" || role === "member";

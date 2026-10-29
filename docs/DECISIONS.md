@@ -81,6 +81,13 @@ Lo que no está en la matriz se deniega. Gestionar boards y columnas es solo de 
 
 - **Un solo punto de control:** toda ruta bajo un workspace pasa por el middleware `requireAccess`. El middleware resuelve el workspace desde el path o a través del board, la columna, la tarea o la etiqueta indicados, y le pide a `workspace.Authorizer` (capa app) que lea el rol del usuario y aplique la matriz. El resultado es un `domain.Access` que el handler entrega al caso de uso, y cada caso de uso vuelve a exigir con `Access.Require` la acción que necesita (decisión 7).
 - **403 sin revelar existencia:** si el usuario no es miembro, si el recurso no existe o si el id no es válido, la respuesta es la misma `403 "No tienes acceso a este workspace"`, idéntica byte a byte. Un miembro sin permiso recibe otro 403, "Tu rol no permite esta acción", porque a él no se le revela nada nuevo. Por eso los recursos inexistentes dan 403 y no 404.
+- **Crear workspaces:** cualquier usuario puede crear un workspace, del que queda como admin. El límite es de **2 creados por persona** (`domain.MaxCreatedWorkspaces`, columna `workspaces.created_by`).
+  - Pertenecer a otros workspaces no cuenta, ni por defecto (`DEFAULT_WORKSPACE_ID`) ni porque te añadan.
+  - La creación se serializa por usuario con un advisory lock, así que varias peticiones a la vez no se saltan el límite.
+  - Al pasarlo, responde `409 workspace_limit`. `GET /workspaces` devuelve `created` y `max_created` para que el cliente sepa si ofrecer crear otro.
+  - Los workspaces anteriores a la columna, o cuyo creador se borró, no cuentan para nadie.
+  - Borrar un workspace no lo puede hacer ningún rol: la API no tiene esa operación.
+- **Boards con columnas iniciales:** `POST /workspaces/{id}/boards` acepta `columns`, que se crean con el board en la misma transacción. La interfaz crea cada board con «Pendiente», «En progreso» y «Hecho», y el admin añade más desde el tablero.
 - **Siempre al menos un admin:** cambiar roles y quitar miembros se hace en una transacción que bloquea la fila del workspace (`SELECT … FOR NO KEY UPDATE`), vuelve a comprobar el rol de quien actúa (por si lo degradaron entre la autorización y la transacción) y cuenta admins antes de escribir. Si el cambio dejaría el workspace sin admin, responde `409 last_admin`. Así, dos admins que se degradan mutuamente a la vez no pueden dejarlo sin ninguno.
 
 **Por qué:** centralizar la decisión en una matriz y un middleware hace que añadir rutas no pueda olvidar la autorización, y que los tests puedan recorrer la matriz completa (rol × acción y actor × ruta).

@@ -141,12 +141,17 @@ func (h *boardHandler) listBoards(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"boards": out})
 }
 
+// createBoard: POST /workspaces/{id}/boards {name, columns?}. The columns, if
+// any, are created with the board, in that order.
 func (h *boardHandler) createBoard(w http.ResponseWriter, r *http.Request) {
-	var req nameRequest
+	var req struct {
+		Name    string   `json:"name"`
+		Columns []string `json:"columns"`
+	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	b, err := h.boards.CreateBoard(r.Context(), access(r), req.Name)
+	b, err := h.boards.CreateBoard(r.Context(), access(r), req.Name, req.Columns)
 	if err != nil {
 		writeBoardError(w, r, "create board", err)
 		return

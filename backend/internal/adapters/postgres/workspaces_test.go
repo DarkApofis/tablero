@@ -20,9 +20,15 @@ func TestWorkspaces(t *testing.T) {
 
 	ana, _ := users.Create(ctx, uniqueEmail("ana"), "Ana", "x")
 	beto, _ := users.Create(ctx, uniqueEmail("beto"), "Beto", "x")
-	ws, err := repo.Create(ctx, "Equipo")
+	ws, err := repo.Create(ctx, "Equipo", ana.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if n, err := repo.CountCreatedBy(ctx, ana.ID); err != nil || n != 1 {
+		t.Errorf("ana created %d (%v), want 1", n, err)
+	}
+	if n, _ := repo.CountCreatedBy(ctx, beto.ID); n != 0 {
+		t.Errorf("beto created %d, want 0", n)
 	}
 	if err := repo.AddMember(ctx, ws.ID, ana.ID, domain.RoleAdmin); err != nil {
 		t.Fatal(err)
@@ -72,7 +78,7 @@ func TestUnassignTasksLogsEachTask(t *testing.T) {
 	repo := postgres.NewWorkspaces(pool)
 	admin, _ := users.Create(ctx, uniqueEmail("admin"), "Admin", "x")
 	beto, _ := users.Create(ctx, uniqueEmail("beto"), "Beto", "x")
-	ws, _ := repo.Create(ctx, "Equipo")
+	ws, _ := repo.Create(ctx, "Equipo", admin.ID)
 
 	var board, col uuid.UUID
 	exec := func(sql string, args ...any) {

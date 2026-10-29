@@ -25,17 +25,31 @@ type memRepo struct {
 	members    []member
 	tasksOf    map[domain.ID]int
 	failRemove error
+	creators   []domain.ID // createdBy of each workspace created
 }
 
 func newRepo() *memRepo {
 	return &memRepo{workspaces: map[domain.ID]domain.Workspace{}, tasksOf: map[domain.ID]int{}}
 }
 
-func (r *memRepo) Create(_ context.Context, name string) (domain.Workspace, error) {
+func (r *memRepo) Create(_ context.Context, name string, createdBy domain.ID) (domain.Workspace, error) {
 	ws := domain.Workspace{ID: domain.NewID(), Name: name, CreatedAt: time.Now()}
 	r.workspaces[ws.ID] = ws
+	r.creators = append(r.creators, createdBy)
 	return ws, nil
 }
+
+func (r *memRepo) CountCreatedBy(_ context.Context, user domain.ID) (int64, error) {
+	var n int64
+	for _, c := range r.creators {
+		if c == user {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (r *memRepo) LockCreator(context.Context, domain.ID) error { return nil }
 
 func (r *memRepo) AddMember(_ context.Context, ws, user domain.ID, role domain.Role) error {
 	r.members = append(r.members, member{ws, user, role})
@@ -149,7 +163,7 @@ func newEnv(t *testing.T) *env {
 	e := &env{repo: newRepo(), tx: &fakeTx{}, events: &recorder{}, users: map[domain.Role]domain.ID{}}
 	e.svc = workspace.NewService(e.repo, e.tx, e.events)
 	e.authz = workspace.NewAuthorizer(e.repo)
-	ws, _ := e.repo.Create(context.Background(), "Equipo")
+	ws, _ := e.repo.Create(context.Background(), "Equipo", domain.NewID())
 	e.ws = ws.ID
 	for _, role := range []domain.Role{domain.RoleAdmin, domain.RoleMember, domain.RoleViewer} {
 		e.users[role] = domain.NewID()
@@ -322,5 +336,29 @@ func TestRemoveMemberPublishesUnassignmentsAfterCommit(t *testing.T) {
 	e.repo.tasksOf[e.users[domain.RoleViewer]] = 2
 	if err := e.svc.RemoveMember(ctx, admin, e.users[domain.RoleViewer]); err == nil || len(e.events.events) != 0 || e.tx.rolledBack != 1 {
 		t.Errorf("err = %v, events = %d, rollbacks = %d", err, len(e.events.events), e.tx.rolledBack)
+	}
+}
+
+func TestCreateIsLimitedPerCreator(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	ana, beto := domain.NewID(), domain.NewID()
+
+	for i := range domain.MaxCreatedWorkspaces {
+		if _, err := e.svc.Create(ctx, ana, "Propio"); err != nil {
+			t.Fatalf("workspace %d: %v", i+1, err)
+		}
+	}
+	if _, err := e.svc.Create(ctx, ana, "Uno más"); !errors.Is(err, domain.ErrWorkspaceLimit) {
+		t.Fatalf("over the limit: %v, want ErrWorkspaceLimit", err)
+	}
+	if n, _ := e.svc.CreatedCount(ctx, ana); n != int64(domain.MaxCreatedWorkspaces) {
+		t.Errorf("CreatedCount = %d", n)
+	}
+	// Someone else's limit is their own, and belonging to ana's workspaces
+	// (being added, or by default) does not count.
+	_ = e.repo.AddMember(ctx, e.ws, beto, domain.RoleAdmin)
+	if _, err := e.svc.Create(ctx, beto, "De Beto"); err != nil {
+		t.Errorf("beto's first workspace: %v", err)
 	}
 }

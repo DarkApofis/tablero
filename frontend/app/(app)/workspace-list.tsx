@@ -1,12 +1,68 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { CreateForm } from "@/components/ui/create-form";
 import { Notice } from "@/components/ui/notice";
 import { ApiError } from "@/lib/api";
 import { roleLabel } from "@/lib/roles";
-import { useBoards, useMembers, useWorkspaces, type Workspace } from "@/lib/workspaces";
+import {
+  useBoards,
+  useCreateWorkspace,
+  useMembers,
+  useWorkspaceQuota,
+  useWorkspaces,
+  type Workspace,
+} from "@/lib/workspaces";
+
+/**
+ * "Nuevo workspace", while the user has not created the most they may; then
+ * a note saying so. Whoever creates one is its admin.
+ */
+export function NewWorkspace() {
+  const quota = useWorkspaceQuota();
+  const create = useCreateWorkspace();
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+
+  if (!quota.data) return null;
+  const { created, max, canCreate } = quota.data;
+  if (!canCreate) {
+    return (
+      <p className="text-[13px] text-muted">
+        Has creado {created} de {max} workspaces, el máximo por persona.
+      </p>
+    );
+  }
+  if (!open) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Button variant="primary" onClick={() => setOpen(true)}>
+          Nuevo workspace
+        </Button>
+        <span className="text-[12px] text-faint">
+          {max - created === 1 ? "Puedes crear 1 más" : `Puedes crear ${max - created} más`}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <CreateForm
+      label="Nombre del workspace"
+      submitLabel="Crear"
+      autoFocus
+      className="w-full sm:w-[420px]"
+      onCancel={() => setOpen(false)}
+      onCreate={async (name) => {
+        const ws = await create.mutateAsync(name);
+        router.push(`/workspaces/${ws.id}`);
+      }}
+    />
+  );
+}
 
 const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
 
@@ -54,7 +110,9 @@ export function WorkspaceList() {
     return (
       <div className="flex min-h-[180px] flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-8 text-center">
         <p className="font-medium">Todavía no perteneces a ningún workspace</p>
-        <p className="text-[13.5px] text-muted">Cuando un admin te agregue a su equipo, aparecerá aquí.</p>
+        <p className="text-[13.5px] text-muted">
+          Crea el tuyo con «Nuevo workspace», o espera a que un admin te agregue a su equipo.
+        </p>
       </div>
     );
   }

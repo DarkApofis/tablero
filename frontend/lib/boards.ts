@@ -138,6 +138,31 @@ type UpdateVars = { id: string; version: number; changes: Partial<TaskFields> };
  * Saves edits with the version the client read. The board cache takes the result,
  * or, on a 409, the server's current task.
  */
+/** Creates a task at the end of a column; it shows at once, and its task.created event is then a no-op. */
+export function useCreateTask(boardId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ columnId, title }: { columnId: string; title: string }) =>
+      api.post("/columns/{id}/tasks", { path: { id: columnId }, body: { title } }),
+    onSuccess: (task) =>
+      queryClient.setQueryData<BoardDetail>(boardKeys.detail(boardId), (b) => b && withTask(b, task)),
+  });
+}
+
+/** Adds a column at the end of the board (admins). */
+export function useCreateColumn(boardId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.post("/boards/{id}/columns", { path: { id: boardId }, body: { name } }),
+    onSuccess: (column) =>
+      queryClient.setQueryData<BoardDetail>(boardKeys.detail(boardId), (b) =>
+        !b || b.columns.some((c) => c.id === column.id)
+          ? b
+          : { ...b, columns: [...b.columns, { ...column, tasks: [] }].sort((x, y) => x.position - y.position) },
+      ),
+  });
+}
+
 export function useUpdateTask(boardId: string) {
   const queryClient = useQueryClient();
   const queryKey = boardKeys.detail(boardId);

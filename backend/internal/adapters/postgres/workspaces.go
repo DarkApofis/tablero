@@ -20,9 +20,19 @@ type Workspaces struct{ conn }
 
 func NewWorkspaces(pool *pgxpool.Pool) *Workspaces { return &Workspaces{conn{pool}} }
 
-func (r *Workspaces) Create(ctx context.Context, name string) (domain.Workspace, error) {
-	ws, err := r.q(ctx).CreateWorkspace(ctx, name)
+func (r *Workspaces) Create(ctx context.Context, name string, createdBy domain.ID) (domain.Workspace, error) {
+	ws, err := r.q(ctx).CreateWorkspace(ctx, db.CreateWorkspaceParams{
+		Name: name, CreatedBy: uuid.NullUUID{UUID: uuid.UUID(createdBy), Valid: true},
+	})
 	return domain.Workspace{ID: domain.ID(ws.ID), Name: ws.Name, CreatedAt: ws.CreatedAt}, err
+}
+
+func (r *Workspaces) CountCreatedBy(ctx context.Context, userID domain.ID) (int64, error) {
+	return r.q(ctx).CountWorkspacesCreatedBy(ctx, uuid.NullUUID{UUID: uuid.UUID(userID), Valid: true})
+}
+
+func (r *Workspaces) LockCreator(ctx context.Context, userID domain.ID) error {
+	return r.q(ctx).LockWorkspaceCreator(ctx, uuid.UUID(userID))
 }
 
 // Exists reports whether the workspace exists.

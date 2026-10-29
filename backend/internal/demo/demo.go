@@ -55,7 +55,7 @@ type Workspaces interface {
 }
 
 type Boards interface {
-	CreateBoard(ctx context.Context, acc domain.Access, name string) (domain.Board, error)
+	CreateBoard(ctx context.Context, acc domain.Access, name string, columns []string) (domain.Board, error)
 	CreateColumn(ctx context.Context, acc domain.Access, boardID domain.ID, name string) (domain.Column, error)
 }
 
@@ -190,7 +190,7 @@ func (s *Service) Seed(ctx context.Context) (Result, error) {
 			return fmt.Errorf("find board: %w", err)
 		}
 		if !found {
-			b, err := s.d.Boards.CreateBoard(ctx, acc("ana"), BoardName)
+			b, err := s.d.Boards.CreateBoard(ctx, acc("ana"), BoardName, nil) // columns: script()
 			if err != nil {
 				return fmt.Errorf("create board: %w", err)
 			}

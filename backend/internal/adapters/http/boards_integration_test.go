@@ -114,7 +114,7 @@ func (e *dbEnv) user(name string) testUser {
 func (e *dbEnv) workspace(members map[testUser]db.WorkspaceRole) uuid.UUID {
 	e.t.Helper()
 	ctx := context.Background()
-	ws, err := e.q.CreateWorkspace(ctx, "Equipo")
+	ws, err := e.q.CreateWorkspace(ctx, db.CreateWorkspaceParams{Name: "Equipo"})
 	if err != nil {
 		e.t.Fatal(err)
 	}

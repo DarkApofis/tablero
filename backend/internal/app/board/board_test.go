@@ -321,7 +321,7 @@ func TestUseCasesApplyTheRoleMatrix(t *testing.T) {
 	}{
 		{"ListBoards", domain.ActionRead, func(a domain.Access) error { _, err := e.svc.ListBoards(ctx, a); return err }},
 		{"GetBoardDetail", domain.ActionRead, func(a domain.Access) error { _, err := e.svc.GetBoardDetail(ctx, a, b.ID, false); return err }},
-		{"CreateBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.CreateBoard(ctx, a, "N"); return err }},
+		{"CreateBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.CreateBoard(ctx, a, "N", nil); return err }},
 		{"RenameBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.RenameBoard(ctx, a, b.ID, "N"); return err }},
 		{"CreateColumn", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.CreateColumn(ctx, a, b.ID, "N"); return err }},
 		{"RenameColumn", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.RenameColumn(ctx, a, col.ID, "N"); return err }},
@@ -608,5 +608,39 @@ func TestColumnAndLabelChangesArePublishedAfterCommit(t *testing.T) {
 	}
 	if len(e.pub.events) != published || e.tx.rollbacks != 2 {
 		t.Errorf("published %d more, rollbacks %d", len(e.pub.events)-published, e.tx.rollbacks)
+	}
+}
+
+func TestCreateBoardWithColumns(t *testing.T) {
+	e := newEnv()
+	ctx := context.Background()
+
+	b, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Sprint", []string{" Pendiente ", "En progreso", "Hecho"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.names(t, b.ID); got != "Pendiente,En progreso,Hecho" {
+		t.Errorf("columns = %q", got)
+	}
+	// Each column is logged and published, after the transaction.
+	if len(e.log.entries) != 3 || len(e.pub.events) != 3 || e.pub.events[0].Type != domain.EventColumnCreated {
+		t.Errorf("logged %d, published %d", len(e.log.entries), len(e.pub.events))
+	}
+
+	// Without columns, as before; with a bad one, nothing at all.
+	if b, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Vacío", nil); err != nil || e.names(t, b.ID) != "" {
+		t.Errorf("no columns: %v %q", err, e.names(t, b.ID))
+	}
+	before := len(e.boards.boards)
+	for _, cols := range [][]string{{"Bien", "   "}, make([]string, board.MaxInitialColumns+1)} {
+		if _, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Mal", cols); err == nil {
+			t.Errorf("columns %q accepted", cols)
+		}
+	}
+	if len(e.boards.boards) != before {
+		t.Errorf("a board was created despite invalid columns")
+	}
+	if _, err := e.svc.CreateBoard(ctx, e.as(domain.RoleMember), "De miembro", []string{"A"}); !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("member creating a board: %v", err)
 	}
 }

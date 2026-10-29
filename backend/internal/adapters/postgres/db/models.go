@@ -195,6 +195,7 @@ type Workspace struct {
 	ID        uuid.UUID
 	Name      string
 	CreatedAt time.Time
+	CreatedBy uuid.NullUUID
 }
 
 type WorkspaceMember struct {

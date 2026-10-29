@@ -380,6 +380,9 @@ paths:
       tags: [workspaces]
       summary: Crear un workspace (el creador queda como admin)
       operationId: createWorkspace
+      description: |
+        Cada usuario puede crear como máximo 2 workspaces (`max_created` en `GET /workspaces`).
+        Pertenecer a otros, por defecto o porque le añadieron, no cuenta.
       requestBody:
         required: true
         content:
@@ -393,6 +396,11 @@ paths:
               schema: { $ref: "#/components/schemas/Workspace" }
         "400": { $ref: "#/components/responses/InvalidJSON" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: Ya creó el máximo de workspaces (`workspace_limit`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
     get:
@@ -406,11 +414,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [workspaces]
+                required: [workspaces, created, max_created]
                 properties:
                   workspaces:
                     type: array
                     items: { $ref: "#/components/schemas/Workspace" }
+                  created:
+                    type: integer
+                    description: Cuántos workspaces ha creado el usuario.
+                  max_created:
+                    type: integer
+                    description: Cuántos puede crear como máximo.
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -517,7 +531,16 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/NameInput" }
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100 }
+                columns:
+                  type: array
+                  maxItems: 20
+                  items: { type: string, maxLength: 100 }
+                  description: Columnas con las que nace el board, en orden, en la misma transacción.
       responses:
         "201":
           description: Board creado.
@@ -1304,6 +1327,7 @@ components:
         - db_unavailable
         - shutting_down
         - guest_limit
+        - workspace_limit
         - demo_unavailable
         - rate_limited
         - csrf_rejected

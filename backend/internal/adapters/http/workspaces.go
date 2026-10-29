@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -62,17 +63,26 @@ func (h *workspaceHandler) create(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, newWorkspaceResponse(ws))
 }
 
+// list: GET /workspaces, the caller's workspaces, plus how many they created
+// out of the most they may (so a client knows whether to offer creating one).
 func (h *workspaceHandler) list(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.ws.ListForUser(r.Context(), currentUser(r))
 	if err != nil {
 		internalError(w, r, "list workspaces", err)
 		return
 	}
+	created, err := h.ws.CreatedCount(r.Context(), currentUser(r))
+	if err != nil {
+		internalError(w, r, "count created workspaces", err)
+		return
+	}
 	out := make([]workspaceResponse, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, newWorkspaceResponse(row))
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{"workspaces": out})
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"workspaces": out, "created": created, "max_created": domain.MaxCreatedWorkspaces,
+	})
 }
 
 func (h *workspaceHandler) listMembers(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +210,9 @@ func writeWorkspaceError(w http.ResponseWriter, r *http.Request, op string, err 
 		WriteError(w, http.StatusNotFound, CodeMemberNotFound, "Ese usuario no es miembro del workspace")
 	case errors.Is(err, domain.ErrLastAdmin):
 		WriteError(w, http.StatusConflict, CodeLastAdmin, "El workspace debe tener al menos un admin")
+	case errors.Is(err, domain.ErrWorkspaceLimit):
+		WriteError(w, http.StatusConflict, CodeWorkspaceLimit,
+			fmt.Sprintf("Ya creaste %d workspaces, el máximo por persona", domain.MaxCreatedWorkspaces))
 	default:
 		internalError(w, r, op, err)
 	}

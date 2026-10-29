@@ -40,16 +40,37 @@ func (q *Queries) CountWorkspaceAdmins(ctx context.Context, workspaceID uuid.UUI
 	return count, err
 }
 
-const createWorkspace = `-- name: CreateWorkspace :one
-INSERT INTO workspaces (name)
-VALUES ($1)
-RETURNING id, name, created_at
+const countWorkspacesCreatedBy = `-- name: CountWorkspacesCreatedBy :one
+SELECT count(*) FROM workspaces WHERE created_by = $1
 `
 
-func (q *Queries) CreateWorkspace(ctx context.Context, name string) (Workspace, error) {
-	row := q.db.QueryRow(ctx, createWorkspace, name)
+func (q *Queries) CountWorkspacesCreatedBy(ctx context.Context, createdBy uuid.NullUUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countWorkspacesCreatedBy, createdBy)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createWorkspace = `-- name: CreateWorkspace :one
+INSERT INTO workspaces (name, created_by)
+VALUES ($1, $2)
+RETURNING id, name, created_at, created_by
+`
+
+type CreateWorkspaceParams struct {
+	Name      string
+	CreatedBy uuid.NullUUID
+}
+
+func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, createWorkspace, arg.Name, arg.CreatedBy)
 	var i Workspace
-	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.CreatedBy,
+	)
 	return i, err
 }
 
@@ -277,6 +298,17 @@ FOR NO KEY UPDATE
 // (LockMembership) and a member removal waiting for it would deadlock.
 func (q *Queries) LockWorkspace(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, lockWorkspace, id)
+	return err
+}
+
+const lockWorkspaceCreator = `-- name: LockWorkspaceCreator :exec
+SELECT pg_advisory_xact_lock(hashtextextended('workspace_creator:' || CAST($1 AS uuid)::text, 0))
+`
+
+// LockWorkspaceCreator serializes, per user, creating workspaces until the
+// transaction ends, so two at once cannot both pass the limit.
+func (q *Queries) LockWorkspaceCreator(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockWorkspaceCreator, userID)
 	return err
 }
 

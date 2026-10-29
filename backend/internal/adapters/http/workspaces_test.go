@@ -26,6 +26,7 @@ type fakeWorkspaceStore struct {
 	users      *fakeStore
 	workspaces map[domain.ID]domain.Workspace
 	members    []fakeMember // insertion order = join order
+	creators   []domain.ID  // createdBy of each workspace created
 }
 
 type fakeMember struct {
@@ -42,11 +43,24 @@ func newFakeWorkspaceStore(users *fakeStore) *fakeWorkspaceStore {
 	return &fakeWorkspaceStore{users: users, workspaces: map[domain.ID]domain.Workspace{}}
 }
 
-func (f *fakeWorkspaceStore) Create(_ context.Context, name string) (domain.Workspace, error) {
+func (f *fakeWorkspaceStore) Create(_ context.Context, name string, createdBy domain.ID) (domain.Workspace, error) {
 	ws := domain.Workspace{ID: domain.NewID(), Name: name, CreatedAt: time.Now()}
 	f.workspaces[ws.ID] = ws
+	f.creators = append(f.creators, createdBy)
 	return ws, nil
 }
+
+func (f *fakeWorkspaceStore) CountCreatedBy(_ context.Context, userID domain.ID) (int64, error) {
+	var n int64
+	for _, c := range f.creators {
+		if c == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeWorkspaceStore) LockCreator(context.Context, domain.ID) error { return nil }
 
 func (f *fakeWorkspaceStore) AddMember(_ context.Context, wsID, userID domain.ID, role domain.Role) error {
 	f.members = append(f.members, fakeMember{workspaceID: wsID, userID: userID, role: role, joinedAt: time.Now()})
@@ -181,7 +195,7 @@ func (e *wsEnv) user(name string) testUser {
 
 func (e *wsEnv) workspace(members map[testUser]domain.Role) uuid.UUID {
 	e.t.Helper()
-	ws, _ := e.store.Create(context.Background(), "Equipo")
+	ws, _ := e.store.Create(context.Background(), "Equipo", domain.NewID())
 	for u, role := range members {
 		_ = e.store.AddMember(context.Background(), ws.ID, domain.ID(u.ID), role)
 	}
@@ -393,7 +407,7 @@ func TestListWorkspacesShowsMyRoleAndMemberCount(t *testing.T) {
 func TestListWorkspacesEmptyIsArray(t *testing.T) {
 	e := newWSEnv(t)
 	rec := e.do("GET", "/workspaces", "", e.user("Ana"))
-	if got := strings.TrimSpace(rec.Body.String()); got != `{"workspaces":[]}` {
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"created":0,"max_created":2,"workspaces":[]}` {
 		t.Errorf("body = %s", got)
 	}
 }

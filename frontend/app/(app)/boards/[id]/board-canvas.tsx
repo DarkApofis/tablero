@@ -22,9 +22,13 @@ import {
   type UniqueIdentifier,
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
+import { CreateForm } from "@/components/ui/create-form";
+import { cx } from "@/components/ui/cx";
 import { ApiError, isTaskConflict, type Task } from "@/lib/api";
-import { useMoveTask, type BoardDetail } from "@/lib/boards";
+import { useCreateColumn, useMoveTask, type BoardDetail } from "@/lib/boards";
+import { canManageBoards } from "@/lib/roles";
 import { BoardColumn } from "./board-column";
+import { columnBox } from "./styles";
 import type { Toast } from "./board-toast";
 import { TaskCard } from "./task-card";
 
@@ -323,6 +327,7 @@ export function BoardCanvas({ board, visible, filtered, today, openId, onOpen, n
             isTarget={overColumn === c.id && overColumn !== activeTask?.column_id}
           />
         ))}
+        {canManageBoards(board.role) && <AddColumn boardId={board.id} empty={board.columns.length === 0} />}
       </div>
 
       <DragOverlay>
@@ -361,4 +366,34 @@ function describeMoveError(err: Error) {
   if (err.status === 404) return "La tarea ya no existe. Actualizamos el tablero.";
   if (err.status === 422) return `${err.message}. Actualizamos el tablero.`;
   return "Algo salió mal. La tarea volvió a su sitio.";
+}
+
+/** "Añadir columna" after the last one, for admins; it's added at the end. */
+function AddColumn({ boardId, empty }: { boardId: string; empty: boolean }) {
+  const [open, setOpen] = useState(empty);
+  const create = useCreateColumn(boardId);
+
+  return (
+    <div className={cx(columnBox, "border-dashed border-border-strong bg-transparent")}>
+      {open ? (
+        <CreateForm
+          label="Nombre de la nueva columna"
+          placeholder="Nombre de la columna"
+          submitLabel="Añadir columna"
+          layout="stacked"
+          autoFocus={!empty}
+          onCancel={empty ? undefined : () => setOpen(false)}
+          onCreate={(name) => create.mutateAsync(name)}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-left text-[13px] font-medium text-muted hover:bg-surface2 hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
+        >
+          <span aria-hidden>+</span> Añadir columna
+        </button>
+      )}
+    </div>
+  );
 }

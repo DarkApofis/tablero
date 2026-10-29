@@ -105,7 +105,12 @@ func (s *Service) WorkspaceOfColumn(ctx context.Context, columnID domain.ID) (do
 
 // --- boards ---
 
-func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name string) (domain.Board, error) {
+// MaxInitialColumns caps the columns a board can be created with.
+const MaxInitialColumns = 20
+
+// CreateBoard makes a board with the given columns, in order, all in one
+// transaction: a board is never left half made.
+func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name string, columns []string) (domain.Board, error) {
 	if err := acc.Require(domain.ActionManageBoards); err != nil {
 		return domain.Board{}, err
 	}
@@ -113,7 +118,38 @@ func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name strin
 	if err != nil {
 		return domain.Board{}, err
 	}
-	return s.boards.CreateBoard(ctx, acc.WorkspaceID, name)
+	if len(columns) > MaxInitialColumns {
+		return domain.Board{}, domain.Invalid("columns", fmt.Sprintf("Como mucho %d columnas", MaxInitialColumns))
+	}
+	for i, c := range columns {
+		if columns[i], err = domain.Name(c, domain.MaxColumnNameLen); err != nil {
+			return domain.Board{}, domain.Invalid("columns", "Cada columna necesita un nombre de hasta 100 caracteres")
+		}
+	}
+
+	var b domain.Board
+	var logged []domain.ActivityEntry
+	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		if b, err = s.boards.CreateBoard(ctx, acc.WorkspaceID, name); err != nil {
+			return err
+		}
+		for _, c := range columns {
+			_, entry, err := s.appendColumn(ctx, acc, b.ID, c)
+			if err != nil {
+				return err
+			}
+			logged = append(logged, entry)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Board{}, err
+	}
+	for _, entry := range logged {
+		s.rec.publish(ctx, entry)
+	}
+	return b, nil
 }
 
 func (s *Service) ListBoards(ctx context.Context, acc domain.Access) ([]domain.Board, error) {
@@ -190,6 +226,31 @@ func (s *Service) DeleteBoard(ctx context.Context, acc domain.Access, boardID do
 
 // --- columns ---
 
+// appendColumn adds a column (name already validated) at the end of the
+// board and logs it, in the caller's transaction; the caller publishes.
+func (s *Service) appendColumn(ctx context.Context, acc domain.Access, boardID domain.ID, name string) (domain.Column, domain.ActivityEntry, error) {
+	if err := s.boards.LockBoard(ctx, boardID); err != nil {
+		return domain.Column{}, domain.ActivityEntry{}, fmt.Errorf("lock board: %w", err)
+	}
+	columns, err := s.boards.ListColumns(ctx, boardID)
+	if err != nil {
+		return domain.Column{}, domain.ActivityEntry{}, fmt.Errorf("list columns: %w", err)
+	}
+	var last *float64
+	if n := len(columns); n > 0 {
+		last = &columns[n-1].Position
+	}
+	pos, _ := domain.PositionBetween(last, nil) // appending always has room
+	col, err := s.boards.CreateColumn(ctx, boardID, name, pos)
+	if err != nil {
+		return domain.Column{}, domain.ActivityEntry{}, err
+	}
+	logged, err := s.rec.log(ctx, acc, boardID, domain.ActivityColumnCreated, domain.ColumnCreatedPayload{
+		ColumnID: col.ID, Name: col.Name, Position: col.Position,
+	})
+	return col, logged, err
+}
+
 // CreateColumn appends a column at the end of the board.
 func (s *Service) CreateColumn(ctx context.Context, acc domain.Access, boardID domain.ID, name string) (domain.Column, error) {
 	if err := acc.Require(domain.ActionManageBoards); err != nil {
@@ -203,24 +264,8 @@ func (s *Service) CreateColumn(ctx context.Context, acc domain.Access, boardID d
 	var col domain.Column
 	var logged domain.ActivityEntry
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
-		if err := s.boards.LockBoard(ctx, boardID); err != nil {
-			return fmt.Errorf("lock board: %w", err)
-		}
-		columns, err := s.boards.ListColumns(ctx, boardID)
-		if err != nil {
-			return fmt.Errorf("list columns: %w", err)
-		}
-		var last *float64
-		if n := len(columns); n > 0 {
-			last = &columns[n-1].Position
-		}
-		pos, _ := domain.PositionBetween(last, nil) // appending always has room
-		if col, err = s.boards.CreateColumn(ctx, boardID, name, pos); err != nil {
-			return err
-		}
-		logged, err = s.rec.log(ctx, acc, boardID, domain.ActivityColumnCreated, domain.ColumnCreatedPayload{
-			ColumnID: col.ID, Name: col.Name, Position: col.Position,
-		})
+		var err error
+		col, logged, err = s.appendColumn(ctx, acc, boardID, name)
 		return err
 	})
 	if err != nil {

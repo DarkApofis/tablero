@@ -1,10 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CreateForm } from "@/components/ui/create-form";
 import { cx } from "@/components/ui/cx";
 import type { Task } from "@/lib/api";
-import type { BoardColumn as Column } from "@/lib/boards";
+import { useCreateTask, type BoardColumn as Column } from "@/lib/boards";
 import { SortableTask } from "./sortable-task";
 import { columnBox } from "./styles";
 
@@ -16,7 +18,7 @@ type Props = {
   total: number;
   filtered: boolean;
   today: Date;
-  /** Whether the user may move tasks at all. */
+  /** Whether the user may move (and create) tasks at all. */
   canDrag: boolean;
   /** Tasks whose move is still saving; they can't be dragged again until it lands. */
   pendingIds: string[];
@@ -88,6 +90,38 @@ export function BoardColumn(props: Props) {
           </ol>
         )}
       </SortableContext>
+      {canDrag && <AddTask column={column} />}
     </section>
+  );
+}
+
+/** "Añadir tarea" at the foot of the column: a title, and it's at the end. */
+function AddTask({ column }: { column: Column }) {
+  const [open, setOpen] = useState(false);
+  const create = useCreateTask(column.board_id);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-left text-[13px] font-medium text-muted hover:bg-surface2 hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
+      >
+        <span aria-hidden>+</span> Añadir tarea<span className="sr-only"> en {column.name}</span>
+      </button>
+    );
+  }
+  return (
+    <CreateForm
+      label={`Título de la nueva tarea en ${column.name}`}
+      hideLabel
+      placeholder="Título de la tarea"
+      submitLabel="Añadir"
+      maxLength={200}
+      layout="stacked"
+      autoFocus
+      onCancel={() => setOpen(false)}
+      onCreate={(title) => create.mutateAsync({ columnId: column.id, title })}
+    />
   );
 }

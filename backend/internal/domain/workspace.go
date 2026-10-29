@@ -9,6 +9,10 @@ import (
 
 const MaxWorkspaceNameLen = 100
 
+// MaxCreatedWorkspaces is how many workspaces one user may create. Joining
+// others (by default, or being added) does not count.
+const MaxCreatedWorkspaces = 2
+
 type Workspace struct {
 	ID        ID
 	Name      string
