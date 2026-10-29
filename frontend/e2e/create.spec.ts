@@ -13,7 +13,8 @@ test("una cuenta crea su workspace, un tablero, una columna y una tarea, hasta e
   const page = await openAs(browser, await freshUser(), "/");
 
   await expect(page.getByText("Puedes crear 2 más")).toBeVisible();
-  await page.getByRole("button", { name: "Nuevo workspace" }).click();
+  await expect(page.getByRole("button", { name: "Crear workspace nuevo" })).toBeVisible();
+  await page.getByRole("button", { name: "Crear workspace", exact: true }).click();
   await page.getByLabel("Nombre del workspace").fill("Mi equipo");
   await page.getByRole("button", { name: "Crear", exact: true }).click();
 
@@ -44,13 +45,14 @@ test("una cuenta crea su workspace, un tablero, una columna y una tarea, hasta e
 
   // A second workspace is the last one.
   await page.goto("/");
-  await page.getByRole("button", { name: "Nuevo workspace" }).click();
+  await page.getByRole("button", { name: "Crear workspace nuevo" }).click();
   await page.getByLabel("Nombre del workspace").fill("Otro equipo");
   await page.getByRole("button", { name: "Crear", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Otro equipo" })).toBeVisible();
   await page.goto("/");
   await expect(page.getByText("Has creado 2 de 2 workspaces, el máximo por persona.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Nuevo workspace" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Crear workspace", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Crear workspace nuevo" })).toHaveCount(0);
 });
 
 test("un miembro crea tareas pero no columnas, y un viewer ninguna de las dos", async ({ browser }) => {

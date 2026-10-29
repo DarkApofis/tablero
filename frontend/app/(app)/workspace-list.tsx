@@ -19,14 +19,30 @@ import {
 } from "@/lib/workspaces";
 
 /**
- * "Nuevo workspace", while the user has not created the most they may; then
- * a note saying so. Whoever creates one is its admin.
+ * The home page: the user's workspaces and, while they have not created the
+ * most they may, two ways to create one (the header button and the dashed
+ * tile after the cards). Whoever creates one is its admin.
  */
-export function NewWorkspace() {
+export function WorkspacesHome() {
+  const [creating, setCreating] = useState(false);
+  return (
+    <>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[28px] font-semibold tracking-[-.02em]">Tus workspaces</h1>
+          <p className="mt-1.5 text-sm text-muted">Elige un equipo para ver sus tableros.</p>
+        </div>
+        <NewWorkspace open={creating} onOpenChange={setCreating} />
+      </div>
+      <WorkspaceList onCreate={creating ? undefined : () => setCreating(true)} />
+    </>
+  );
+}
+
+function NewWorkspace({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const quota = useWorkspaceQuota();
   const create = useCreateWorkspace();
   const router = useRouter();
-  const [open, setOpen] = useState(false);
 
   if (!quota.data) return null;
   const { created, max, canCreate } = quota.data;
@@ -40,8 +56,8 @@ export function NewWorkspace() {
   if (!open) {
     return (
       <div className="flex flex-col items-end gap-1">
-        <Button variant="primary" onClick={() => setOpen(true)}>
-          Nuevo workspace
+        <Button variant="primary" icon="+" onClick={() => onOpenChange(true)}>
+          Crear workspace
         </Button>
         <span className="text-[12px] text-faint">
           {max - created === 1 ? "Puedes crear 1 más" : `Puedes crear ${max - created} más`}
@@ -55,7 +71,7 @@ export function NewWorkspace() {
       submitLabel="Crear"
       autoFocus
       className="w-full sm:w-[420px]"
-      onCancel={() => setOpen(false)}
+      onCancel={() => onOpenChange(false)}
       onCreate={async (name) => {
         const ws = await create.mutateAsync(name);
         router.push(`/workspaces/${ws.id}`);
@@ -66,8 +82,10 @@ export function NewWorkspace() {
 
 const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
 
-export function WorkspaceList() {
+/** `onCreate`, when given, adds a "Crear workspace nuevo" tile after the cards. */
+export function WorkspaceList({ onCreate }: { onCreate?: () => void }) {
   const { data: workspaces, error, isPending, refetch, isRefetching } = useWorkspaces();
+  const quota = useWorkspaceQuota();
 
   if (isPending) {
     return (
@@ -111,7 +129,7 @@ export function WorkspaceList() {
       <div className="flex min-h-[180px] flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-8 text-center">
         <p className="font-medium">Todavía no perteneces a ningún workspace</p>
         <p className="text-[13.5px] text-muted">
-          Crea el tuyo con «Nuevo workspace», o espera a que un admin te agregue a su equipo.
+          Crea el tuyo con «Crear workspace», o espera a que un admin te agregue a su equipo.
         </p>
       </div>
     );
@@ -124,6 +142,20 @@ export function WorkspaceList() {
           <WorkspaceCard workspace={ws} />
         </li>
       ))}
+      {onCreate && quota.data?.canCreate && (
+        <li>
+          <button
+            type="button"
+            onClick={onCreate}
+            className="flex h-full min-h-[140px] w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-5 text-sm text-muted transition-colors hover:border-accent-text hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
+          >
+            <span aria-hidden className="text-[22px] leading-none text-accent-text">
+              +
+            </span>
+            Crear workspace nuevo
+          </button>
+        </li>
+      )}
     </ul>
   );
 }
