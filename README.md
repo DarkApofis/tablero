@@ -1,158 +1,158 @@
 # Tablero
 
-Tablero kanban colaborativo: workspaces con roles, tableros, columnas y tareas
-con concurrencia optimista y orden por posición fraccionaria.
+A collaborative kanban board: workspaces with roles, boards, columns and tasks,
+with optimistic concurrency and fractional-position ordering.
 
-## Estructura
+## Structure
 
-- `backend/` — API en Go con arquitectura hexagonal ([decisión 7](docs/DECISIONS.md)): `net/http`, PostgreSQL con pgx, migraciones con goose, consultas con sqlc.
-  - `cmd/api` — raíz de composición: construye los adaptadores y los pasa a los casos de uso.
-  - `internal/domain` — entidades, reglas, matriz de roles y errores de dominio (solo stdlib).
-  - `internal/app/{auth,workspace,board,task}` — casos de uso; cada paquete define sus puertos.
-  - `internal/adapters/http` — router, handlers y middlewares.
-  - `internal/adapters/postgres` — repositorios, `TxManager` y el código generado por sqlc (`db/`).
-  - `internal/adapters/{token,hasher,events}` — JWT, argon2id y publicación de eventos.
-  - `internal/config` — configuración desde variables de entorno.
-  - `migrations/`, `queries/` — SQL de goose y de sqlc.
-- `frontend/` — Next.js (App Router, TypeScript, Tailwind) con pnpm.
-- `docs/` — [API (OpenAPI)](docs/openapi.yaml), [catálogo de eventos en tiempo real](docs/EVENTS.md) y [decisiones de arquitectura](docs/DECISIONS.md).
+- `backend/` — Go API with a hexagonal architecture ([decision 7](docs/DECISIONS.md)): `net/http`, PostgreSQL with pgx, migrations with goose, queries with sqlc.
+  - `cmd/api` — composition root: builds the adapters and hands them to the use cases.
+  - `internal/domain` — entities, rules, role matrix and domain errors (stdlib only).
+  - `internal/app/{auth,workspace,board,task}` — use cases; each package defines its own ports.
+  - `internal/adapters/http` — router, handlers and middlewares.
+  - `internal/adapters/postgres` — repositories, `TxManager` and the sqlc-generated code (`db/`).
+  - `internal/adapters/{token,hasher,events}` — JWT, argon2id and event publishing.
+  - `internal/config` — configuration from environment variables.
+  - `migrations/`, `queries/` — goose and sqlc SQL.
+- `frontend/` — Next.js (App Router, TypeScript, Tailwind) with pnpm.
+- `docs/` — [API (OpenAPI)](docs/openapi.yaml), [real-time event catalog](docs/EVENTS.md) and [architecture decisions](docs/DECISIONS.md).
 
-## Requisitos
+## Requirements
 
 - Go 1.26+
-- Node 24+ y pnpm 11 (`corepack enable` o `npm i -g pnpm`)
-- Docker con Docker Compose
-- [goose](https://github.com/pressly/goose) y [sqlc](https://sqlc.dev):
+- Node 24+ and pnpm 11 (`corepack enable` or `npm i -g pnpm`)
+- Docker with Docker Compose
+- [goose](https://github.com/pressly/goose) and [sqlc](https://sqlc.dev):
   ```sh
   go install github.com/pressly/goose/v3/cmd/goose@latest
   go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
   ```
-- `make` es opcional: cada target del `Makefile` es un comando que puedes ejecutar a mano.
+- `make` is optional: every `Makefile` target is a command you can run by hand.
 
-## Todo con Docker
-
-```sh
-docker compose up --build        # o: docker compose up -d --build --wait
-```
-
-Levanta, en orden y cada uno esperando al anterior:
-
-1. **db**: Postgres 16 (healthcheck con `pg_isready`).
-2. **migrate**: aplica `backend/migrations` con goose y termina. La API no arranca si
-   falla (`service_completed_successfully`).
-3. **api**: la API, cuando `/ready` responde (healthcheck).
-4. **web**: el frontend (servidor standalone de Next.js) en http://localhost:3000.
-
-Las imágenes son multi-stage. La API es un binario estático sobre distroless (sin shell, usuario
-`nonroot`) y el frontend corre con el usuario `node`. Los puertos del host se cambian con
-`DB_PORT`, `API_PORT` y `WEB_PORT`; Compose también lee el `.env` de la raíz, así que su
-`CORS_ORIGINS` y su `JWT_SECRET` se aplican al contenedor de la API.
-`docker compose down` apaga la API sin cortar peticiones (ver *Salud y apagado*).
-
-## Datos de demo
-
-`cmd/seed` carga un workspace de ejemplo listo para enseñar:
+## Everything with Docker
 
 ```sh
-cd backend && go run ./cmd/seed                     # con DATABASE_URL en el entorno
-docker compose run --rm --entrypoint /app/seed api  # o contra la base de Compose
+docker compose up --build        # or: docker compose up -d --build --wait
 ```
 
-Usuarios (contraseñas públicas, solo para la demo):
+Starts, in order and each one waiting for the previous:
 
-| Persona | Correo | Contraseña | Rol en «Estudio Nube» |
+1. **db**: Postgres 16 (healthcheck with `pg_isready`).
+2. **migrate**: applies `backend/migrations` with goose and exits. The API does not start if
+   it fails (`service_completed_successfully`).
+3. **api**: the API, once `/ready` responds (healthcheck).
+4. **web**: the frontend (Next.js standalone server) at http://localhost:3000.
+
+The images are multi-stage. The API is a static binary on distroless (no shell, `nonroot`
+user) and the frontend runs as the `node` user. Host ports can be changed with
+`DB_PORT`, `API_PORT` and `WEB_PORT`; Compose also reads the root `.env`, so its
+`CORS_ORIGINS` and `JWT_SECRET` apply to the API container.
+`docker compose down` stops the API without dropping requests (see *Health and shutdown*).
+
+## Demo data
+
+`cmd/seed` loads a sample workspace ready to show:
+
+```sh
+cd backend && go run ./cmd/seed                     # with DATABASE_URL in the environment
+docker compose run --rm --entrypoint /app/seed api  # or against the Compose database
+```
+
+Users (public passwords, for the demo only):
+
+| Person | Email | Password | Role in "Estudio Nube" |
 |---|---|---|---|
 | Ana Torres | `ana@estudionube.example` | `nube-admin-demo` | admin |
-| Bruno Díaz | `bruno@estudionube.example` | `nube-miembro-demo` | miembro |
-| Vera Molina | `vera@estudionube.example` | `nube-viewer-demo` | viewer (solo lectura) |
+| Bruno Díaz | `bruno@estudionube.example` | `nube-miembro-demo` | member |
+| Vera Molina | `vera@estudionube.example` | `nube-viewer-demo` | viewer (read-only) |
 
-El workspace **Estudio Nube** tiene el tablero *Rediseño web · Panadería Trigo*: 4 columnas
-(Pendiente, En progreso, En revisión, Hecho), 21 tarjetas (una archivada) con etiquetas,
-prioridades, fechas relativas a hoy (algunas vencidas) y responsables, y 52 entradas de
-actividad (altas, movimientos y cambios) repartidas por los últimos diez días. Todo se crea con los mismos casos de uso
-que la API, así que la actividad es la que la app produciría.
+The **Estudio Nube** workspace has the board *Rediseño web · Panadería Trigo*: 4 columns
+(Pendiente, En progreso, En revisión, Hecho), 21 cards (one archived) with labels,
+priorities, dates relative to today (some overdue) and assignees, and 52 activity
+entries (creations, moves and changes) spread over the last ten days. Everything is created
+through the same use cases as the API, so the activity is what the app itself would produce.
 
-Es idempotente: si los usuarios existen, les devuelve el nombre, la contraseña y el rol
-documentados; si el workspace o el tablero existen, los reutiliza (sus ids y URLs no
-cambian) y deja el tablero **como al principio**, borrando lo que se haya cambiado en él y
-cualquier otro tablero del workspace. No toca nada fuera de «Estudio Nube».
+It is idempotent: if the users exist, it restores their documented name, password and
+role; if the workspace or the board exist, it reuses them (their ids and URLs don't
+change) and resets the board **to its initial state**, deleting whatever was changed on it
+and any other board in the workspace. It touches nothing outside "Estudio Nube".
 
-### Modo demo
+### Demo mode
 
-Con `DEMO_MODE=true` la API carga los datos de demo al arrancar y además:
+With `DEMO_MODE=true` the API loads the demo data on startup and also:
 
-- El login muestra **«Entrar como invitado»** (`GET /demo` le dice si está activo). Crea una
-  cuenta temporal (`Invitado XXXX`) como miembro de Estudio Nube, inicia su sesión y abre el
-  tablero. Como mucho hay `DEMO_MAX_GUESTS` invitados a la vez; luego responde 429.
-- Cada `DEMO_RESET_INTERVAL` borra los invitados más antiguos que `DEMO_GUEST_TTL` y restaura
-  los datos de demo. Quien tenga el tablero abierto lo ve recargarse solo (el stream le
-  envía un `resync`). Con varias instancias, solo una restaura cada vez (advisory lock).
+- The login page shows **"Entrar como invitado"** (`GET /demo` tells it whether demo mode is on).
+  It creates a temporary account (`Invitado XXXX`) as a member of Estudio Nube, signs it in and
+  opens the board. At most `DEMO_MAX_GUESTS` guests exist at once; beyond that it responds 429.
+- Every `DEMO_RESET_INTERVAL` it deletes guests older than `DEMO_GUEST_TTL` and restores
+  the demo data. Anyone with the board open sees it reload by itself (the stream sends
+  a `resync`). With several instances, only one restores at a time (advisory lock).
 
-| Variable | Por defecto | |
+| Variable | Default | |
 |---|---|---|
-| `DEMO_MODE` | `false` | Activa el modo demo |
-| `DEMO_RESET_INTERVAL` | `1h` | Cada cuánto se restauran los datos (mínimo `1m`) |
-| `DEMO_GUEST_TTL` | `2h` | Edad a partir de la cual el siguiente reset borra a un invitado |
-| `DEMO_MAX_GUESTS` | `100` | Invitados creados dentro del TTL como máximo |
+| `DEMO_MODE` | `false` | Enables demo mode |
+| `DEMO_RESET_INTERVAL` | `1h` | How often the data is restored (minimum `1m`) |
+| `DEMO_GUEST_TTL` | `2h` | Age after which the next reset deletes a guest |
+| `DEMO_MAX_GUESTS` | `100` | Maximum guests created within the TTL |
 
 ```sh
 DEMO_MODE=true docker compose up -d --build --wait
 ```
 
-Las credenciales de la tabla son públicas, también la del admin: en un despliegue con
-`DEMO_MODE` cualquiera puede entrar como Ana. El reset deshace lo que haga, pero no actives
-el modo demo en una base con datos reales.
+The credentials in the table are public, the admin's included: on a deployment with
+`DEMO_MODE` anyone can sign in as Ana. The reset undoes whatever they do, but don't enable
+demo mode on a database with real data.
 
-## Levantar el proyecto para desarrollar
+## Running the project for development
 
-### 1. Configuración
+### 1. Configuration
 
 ```sh
 cp .env.example .env
 ```
 
-Cambia `JWT_SECRET` por un valor aleatorio de al menos 32 bytes
-(`openssl rand -base64 48`). La API valida todo al arrancar: si falta una variable
-obligatoria o alguna no es válida, termina con código 2 y una lista de todos los problemas
-(sin repetir valores secretos), y si la base no responde, termina sin abrir el puerto.
-Variables disponibles:
+Replace `JWT_SECRET` with a random value of at least 32 bytes
+(`openssl rand -base64 48`). The API validates everything on startup: if a required
+variable is missing or any is invalid, it exits with code 2 and a list of every problem
+(without echoing secret values), and if the database does not respond, it exits without
+opening the port. Available variables:
 
-| Variable | Por defecto | |
+| Variable | Default | |
 |---|---|---|
-| `DATABASE_URL` | — (obligatoria) | Conexión a Postgres |
-| `JWT_SECRET` | — (obligatoria, ≥ 32 bytes) | Firma de los access tokens |
-| `PORT` | `8080` | Puerto de la API |
-| `CORS_ORIGINS` | `http://localhost:3000` | Orígenes permitidos, separados por comas |
-| `ACCESS_TOKEN_TTL` | `15m` | Vida del access token |
-| `REFRESH_TOKEN_TTL` | `720h` | Vida del refresh token |
-| `COOKIE_SECURE` | `true` | `Secure` en las cookies de sesión (funciona en `http://localhost`) |
-| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` o `none` (este, solo con `COOKIE_SECURE=true`) |
-| `COOKIE_DOMAIN` | — | `Domain` de las cookies de sesión; sin él, solo el host de la API |
-| `TRUST_PROXY` | `false` | Detrás de un proxy inverso: IP del cliente y esquema desde `X-Forwarded-For` / `X-Forwarded-Proto` |
-| `TRUST_PROXY_HOPS` | `1` | Cuántos proxies añaden entradas a `X-Forwarded-For` (2 con Vercel delante de Render) |
-| `COOKIE_PATH_PREFIX` | — | Prefijo de la ruta de las cookies cuando un proxy sirve la API bajo una ruta (`/api` con el proxy de Vercel) |
-| `RATE_LIMIT` | `true` | Límites de intentos en login, registro e invitados |
-| `SSE_MAX_PER_USER` | `10` | Streams en vivo abiertos por usuario (por instancia) |
-| `SSE_MAX_PER_BOARD` | `1000` | Streams en vivo abiertos por tablero (por instancia) |
-| `DEFAULT_WORKSPACE_ID` | — | Workspace al que entra cada cuenta nueva, como **miembro**: puede crear, editar, mover y borrar tareas y gestionar etiquetas, pero no tableros, columnas, miembros ni configuración. La API no arranca si no existe |
-| `MIGRATE_ON_START` | `false` | Aplicar las migraciones al arrancar, antes de abrir el puerto (para plataformas sin paso de pre-deploy, ver `docs/DEPLOY.md`) |
-| `MIGRATIONS_DIR` / `MIGRATE_LOCK_TIMEOUT` | `migrations` / `5s` | Dónde están las migraciones y cuánto puede esperar una por un bloqueo de tabla |
-| `SHUTDOWN_DELAY` | `0s` | Al recibir SIGTERM, cuánto sigue atendiendo con `/ready` en 503 antes de dejar de aceptar conexiones |
-| `SHUTDOWN_TIMEOUT` | `15s` | Después, cuánto esperan las peticiones en curso antes de cerrarse |
-| `EVENTS_BACKEND` | `memory` | `memory` para una instancia; `postgres` para varias instancias sobre la misma base (eventos y presencia por `LISTEN/NOTIFY`, [decisión 8](docs/DECISIONS.md)) |
+| `DATABASE_URL` | — (required) | Postgres connection |
+| `JWT_SECRET` | — (required, ≥ 32 bytes) | Signs the access tokens |
+| `PORT` | `8080` | API port |
+| `CORS_ORIGINS` | `http://localhost:3000` | Allowed origins, comma-separated |
+| `ACCESS_TOKEN_TTL` | `15m` | Access token lifetime |
+| `REFRESH_TOKEN_TTL` | `720h` | Refresh token lifetime |
+| `COOKIE_SECURE` | `true` | `Secure` on the session cookies (works on `http://localhost`) |
+| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` or `none` (the latter only with `COOKIE_SECURE=true`) |
+| `COOKIE_DOMAIN` | — | `Domain` of the session cookies; without it, only the API host |
+| `TRUST_PROXY` | `false` | Behind a reverse proxy: client IP and scheme from `X-Forwarded-For` / `X-Forwarded-Proto` |
+| `TRUST_PROXY_HOPS` | `1` | How many proxies add entries to `X-Forwarded-For` (2 with Vercel in front of Render) |
+| `COOKIE_PATH_PREFIX` | — | Cookie path prefix when a proxy serves the API under a path (`/api` with the Vercel proxy) |
+| `RATE_LIMIT` | `true` | Attempt limits on login, registration and guests |
+| `SSE_MAX_PER_USER` | `10` | Open live streams per user (per instance) |
+| `SSE_MAX_PER_BOARD` | `1000` | Open live streams per board (per instance) |
+| `DEFAULT_WORKSPACE_ID` | — | Workspace every new account joins, as a **member**: can create, edit, move and delete tasks and manage labels, but not boards, columns, members or settings. The API does not start if it doesn't exist |
+| `MIGRATE_ON_START` | `false` | Apply migrations on startup, before opening the port (for platforms without a pre-deploy step, see `docs/DEPLOY.md`) |
+| `MIGRATIONS_DIR` / `MIGRATE_LOCK_TIMEOUT` | `migrations` / `5s` | Where the migrations live and how long one may wait for a table lock |
+| `SHUTDOWN_DELAY` | `0s` | On SIGTERM, how long it keeps serving with `/ready` at 503 before it stops accepting connections |
+| `SHUTDOWN_TIMEOUT` | `15s` | After that, how long in-flight requests may take before they are closed |
+| `EVENTS_BACKEND` | `memory` | `memory` for a single instance; `postgres` for several instances on the same database (events and presence over `LISTEN/NOTIFY`, [decision 8](docs/DECISIONS.md)) |
 
-### 2. Base de datos
+### 2. Database
 
 ```sh
-docker compose up -d --wait db   # solo Postgres 16, en localhost:5432
-make migrate-up                  # o: goose -dir backend/migrations postgres "$DATABASE_URL" up
+docker compose up -d --wait db   # Postgres 16 only, on localhost:5432
+make migrate-up                  # or: goose -dir backend/migrations postgres "$DATABASE_URL" up
 ```
 
-`make migrate-status` y `make migrate-down` muestran y revierten migraciones.
+`make migrate-status` and `make migrate-down` show and roll back migrations.
 
 ### 3. API
 
-La API lee la configuración del entorno (no carga `.env` por sí misma):
+The API reads its configuration from the environment (it does not load `.env` itself):
 
 ```sh
 # bash / zsh
@@ -166,20 +166,20 @@ Get-Content .env | Where-Object { $_ -match '^([A-Z_]+)=(.*)$' } | ForEach-Objec
 cd backend; go run ./cmd/api
 ```
 
-Comprueba que responde: `curl http://localhost:8080/ready` → `{"status":"ok"}`.
+Check that it responds: `curl http://localhost:8080/ready` → `{"status":"ok"}`.
 
-### Salud y apagado
+### Health and shutdown
 
-- `GET /health` es *liveness*: el proceso está vivo. No consulta la base, así que una
-  caída de Postgres no hace reiniciar una API sana.
-- `GET /ready` es *readiness*: la base responde y la API no se está apagando. Si no,
-  responde 503 (`db_unavailable` o `shutting_down`).
+- `GET /health` is *liveness*: the process is alive. It doesn't query the database, so a
+  Postgres outage doesn't restart a healthy API.
+- `GET /ready` is *readiness*: the database responds and the API is not shutting down.
+  Otherwise it responds 503 (`db_unavailable` or `shutting_down`).
 
-Con SIGTERM, `/ready` pasa a 503 y la API sigue atendiendo `SHUTDOWN_DELAY`, para que el
-balanceador deje de enviarle tráfico y entren las conexiones ya encoladas. Después deja de
-aceptar conexiones y espera hasta `SHUTDOWN_TIMEOUT` a las peticiones en curso; los
-streams de eventos se cierran y los clientes se reconectan. En Compose son 3 s + 15 s,
-dentro de `stop_grace_period: 20s`. Una segunda señal la termina en el acto.
+On SIGTERM, `/ready` switches to 503 and the API keeps serving for `SHUTDOWN_DELAY`, so the
+load balancer stops sending it traffic and already-queued connections get in. Then it stops
+accepting connections and waits up to `SHUTDOWN_TIMEOUT` for in-flight requests; event
+streams are closed and clients reconnect. In Compose that is 3 s + 15 s, within
+`stop_grace_period: 20s`. A second signal terminates it immediately.
 
 ### 4. Frontend
 
@@ -194,17 +194,17 @@ pnpm dev                         # http://localhost:3000
 
 ```sh
 cd backend
-go test ./...          # unitarios + integración (necesita Docker)
-go test -short ./...   # solo unitarios
+go test ./...          # unit + integration (needs Docker)
+go test -short ./...   # unit only
 ```
 
-Los casos de uso (`internal/app`) se prueban con fakes en memoria de sus puertos.
-Los repositorios (`internal/adapters/postgres`) y la API completa
-(`internal/adapters/http`) se prueban contra un Postgres efímero de
-[Testcontainers](https://golang.testcontainers.org/), al que se le aplican las
-migraciones. Para iterar más rápido contra un servidor ya levantado, apunta
-`TEST_DATABASE_URL` a él: cada paquete de tests crea ahí su propia base, la migra
-y la borra al terminar.
+The use cases (`internal/app`) are tested with in-memory fakes of their ports.
+The repositories (`internal/adapters/postgres`) and the full API
+(`internal/adapters/http`) are tested against an ephemeral Postgres from
+[Testcontainers](https://golang.testcontainers.org/), with the migrations applied.
+To iterate faster against a server that is already running, point
+`TEST_DATABASE_URL` at it: each test package creates its own database there, migrates it
+and drops it when done.
 
 ```sh
 TEST_DATABASE_URL="postgres://tablero:tablero@localhost:5432/tablero?sslmode=disable" go test ./...
@@ -214,81 +214,79 @@ TEST_DATABASE_URL="postgres://tablero:tablero@localhost:5432/tablero?sslmode=dis
 
 ```sh
 cd frontend
-pnpm test          # Vitest + Testing Library: caché del tablero y formulario de login
-pnpm test:e2e      # Playwright contra la API real (abajo)
+pnpm test          # Vitest + Testing Library: board cache, forms and admin dialogs
+pnpm test:e2e      # Playwright against the real API (below)
 ```
 
-Los e2e abren dos o tres navegadores con personas distintas en el mismo tablero
-(mover una tarjeta en vivo, edición simultánea con conflicto, viewer sin arrastre).
-Corren contra la aplicación levantada con Docker Compose:
+The e2e tests open two or three browsers with different people on the same board
+(moving a card live, simultaneous edits with a conflict, a viewer without drag), plus
+workspace administration (creating, inviting, private and archived boards).
+They run against the app started with Docker Compose:
 
 ```sh
 docker compose up -d --build --wait
 cd frontend && pnpm exec playwright install chromium && pnpm test:e2e
 ```
 
-Usan el frontend que ya responde en el puerto 3000 (el contenedor `web`); si no hay
-ninguno, Playwright construye y sirve el del código. Crean usuarios y un workspace
-«E2E …» a través de la API (con invitaciones). Con otros puertos:
+They use the frontend already responding on port 3000 (the `web` container); if there is
+none, Playwright builds and serves the one from the source. They create users and an
+"E2E …" workspace through the API (with invitations). With other ports:
 `API_PORT=8090 WEB_PORT=3100 CORS_ORIGINS=http://localhost:3100 docker compose up -d --build --wait`
-y `E2E_API_URL=http://localhost:8090 E2E_PORT=3100 pnpm test:e2e`.
+and `E2E_API_URL=http://localhost:8090 E2E_PORT=3100 pnpm test:e2e`.
 
-Lint: `golangci-lint run ./...` en `backend/` (incluye `depguard`, que impide que
-`domain` o `app` importen adaptadores) y `pnpm lint` en `frontend/`.
+Lint: `golangci-lint run ./...` in `backend/` (includes `depguard`, which prevents
+`domain` or `app` from importing adapters) and `pnpm lint` in `frontend/`.
 
-## Generación de código
+## Code generation
 
-Tras cambiar `backend/queries/*.sql` o las migraciones, regenera el código de acceso
-a datos con `sqlc generate` (en `backend/`) y haz commit de `internal/adapters/postgres/db`.
+After changing `backend/queries/*.sql` or the migrations, regenerate the data access
+code with `sqlc generate` (in `backend/`) and commit `internal/adapters/postgres/db`.
 
-`TestOpenAPIMatchesRouter` falla si una ruta del router no está en
-`docs/openapi.yaml` o viceversa.
+`TestOpenAPIMatchesRouter` fails if a router route is missing from
+`docs/openapi.yaml` or vice versa.
 
 ## CI
 
-`.github/workflows/ci.yml` corre en cada push a `main` y en cada pull request:
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request:
 
-- **Backend:** `go vet`, `golangci-lint` (con las reglas de dependencias de la arquitectura y gosec), `govulncheck`, tests (con Postgres como servicio) y build.
-- **Frontend:** `pnpm lint`, `pnpm audit --prod`, `pnpm test` y `pnpm build`.
-- **E2E:** levanta toda la aplicación con `docker compose up --build --wait` (las imágenes de la API y del frontend), corre `pnpm test:e2e` contra ella y la para con `docker compose stop`, comprobando que la API termina con código 0. Si falla, sube el informe de Playwright y los logs.
+- **Backend:** `go vet`, `golangci-lint` (with the architecture dependency rules and gosec), `govulncheck`, tests (with Postgres as a service) and build.
+- **Frontend:** `pnpm lint`, `pnpm audit --prod`, `pnpm test` and `pnpm build`.
+- **E2E:** starts the whole app with `docker compose up --build --wait` (the API and frontend images), runs `pnpm test:e2e` against it and stops it with `docker compose stop`, checking that the API exits with code 0. On failure, it uploads the Playwright report and the logs.
 
-## Estado
+## Status
 
-Hecho: autenticación (registro, login, `/me`), workspaces y miembros con roles,
-boards, columnas y tareas con reordenamiento, concurrencia optimista, prioridad,
-fecha límite, responsable, archivado, etiquetas por tablero y registro de actividad.
+Done: authentication (registration, login, refresh, logout, `/me`); workspaces with roles,
+owner, address, settings and invitations by email or link; boards (templates, private,
+archived, duplicated or moved between workspaces), columns and tasks with reordering,
+optimistic concurrency, priority, due date, assignee, archiving, per-board labels and
+an activity log.
 
-Tiempo real: `GET /boards/{id}/events` emite por SSE los cambios del tablero
-([decisión 3](docs/DECISIONS.md)). Para probarlo con curl, usa el access token de
-`/auth/login` (el navegador usa la cookie `access_token`):
+Real time: `GET /boards/{id}/events` streams the board's changes over SSE
+([decision 3](docs/DECISIONS.md)). To try it with curl, use the access token from
+`/auth/login` (the browser uses the `access_token` cookie):
 
 ```sh
 curl -N -H "Authorization: Bearer $TOKEN" http://localhost:8080/boards/$BOARD/events
 ```
 
-Los mensajes están en [`docs/EVENTS.md`](docs/EVENTS.md). `GET /metrics` expone en
-formato Prometheus las conexiones SSE, los eventos publicados, los clientes expulsados
-por lentos y el tiempo de entrega. La prueba de carga (500 clientes sobre un board
-mientras se mueven tareas; resultados en la [decisión 9](docs/DECISIONS.md)) se corre
-con la API levantada:
+The messages are documented in [`docs/EVENTS.md`](docs/EVENTS.md). `GET /metrics` exposes, in
+Prometheus format, the SSE connections, published events, clients dropped for being
+slow and delivery time. The load test (500 clients on one board while tasks are moved;
+results in [decision 9](docs/DECISIONS.md)) runs with the API up:
 
 ```sh
 cd backend && go run ./cmd/loadtest -url http://localhost:8080 -clients 500 -duration 30s -rate 10
 ```
 
-Todos los clientes de la prueba son el mismo usuario: levanta la API con
-`SSE_MAX_PER_USER=1000` para que el límite de streams por usuario no la corte.
+All the test clients are the same user: start the API with
+`SSE_MAX_PER_USER=1000` so the per-user stream limit doesn't cut it off.
 
-## Despliegue
+## Deployment
 
-El backend se despliega gratis en Render (`render.yaml`) con Postgres administrado en Neon.
-Las variables, la estrategia de migraciones y el paso a paso están en [`docs/DEPLOY.md`](docs/DEPLOY.md).
+The backend deploys for free on Render (`render.yaml`) with managed Postgres on Neon.
+The variables, the migration strategy and the step-by-step guide are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
-## Seguridad
+## Security
 
-El modelo de amenazas, las defensas (rate limiting, CSRF, cabeceras, cookies, límites) y
-cómo correr `govulncheck`, gosec y `pnpm audit` están en [`docs/SECURITY.md`](docs/SECURITY.md).
-
-Pendiente: refresco y cierre de sesión (`/auth/refresh`, `/auth/logout`), invitar
-miembros y la interfaz del
-tablero en el frontend.
+The threat model, the defenses (rate limiting, CSRF, headers, cookies, limits) and
+how to run `govulncheck`, gosec and `pnpm audit` are in [`docs/SECURITY.md`](docs/SECURITY.md).
