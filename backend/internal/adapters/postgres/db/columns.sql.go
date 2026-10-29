@@ -88,17 +88,22 @@ func (q *Queries) GetColumnLocation(ctx context.Context, id uuid.UUID) (GetColum
 }
 
 const getColumnWorkspaceID = `-- name: GetColumnWorkspaceID :one
-SELECT b.workspace_id
+SELECT b.workspace_id, b.id AS board_id
 FROM columns c
 JOIN boards b ON b.id = c.board_id
 WHERE c.id = $1
 `
 
-func (q *Queries) GetColumnWorkspaceID(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+type GetColumnWorkspaceIDRow struct {
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
+}
+
+func (q *Queries) GetColumnWorkspaceID(ctx context.Context, id uuid.UUID) (GetColumnWorkspaceIDRow, error) {
 	row := q.db.QueryRow(ctx, getColumnWorkspaceID, id)
-	var workspace_id uuid.UUID
-	err := row.Scan(&workspace_id)
-	return workspace_id, err
+	var i GetColumnWorkspaceIDRow
+	err := row.Scan(&i.WorkspaceID, &i.BoardID)
+	return i, err
 }
 
 const listColumnTaskIDs = `-- name: ListColumnTaskIDs :many

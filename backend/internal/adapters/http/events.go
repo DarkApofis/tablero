@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,8 +66,11 @@ type presenceMessage struct {
 }
 
 type eventsHandler struct {
-	streams      *board.StreamService
-	authz        *workspace.Authorizer
+	streams *board.StreamService
+	authz   *workspace.Authorizer
+	// locate finds the board's workspace again on every heartbeat: the board
+	// may have moved, become private or been deleted.
+	locate       func(ctx context.Context, boardID domain.ID) (domain.Location, error)
 	heartbeat    time.Duration
 	writeTimeout time.Duration
 	// delivery observes, for each live event, the time from its publication
@@ -223,7 +227,11 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case <-ticker.C:
-			if _, err := h.authz.Authorize(ctx, acc.UserID, acc.WorkspaceID, domain.ActionRead); err != nil {
+			loc, err := h.locate(ctx, domain.ID(boardID))
+			if err != nil {
+				return
+			}
+			if _, err := h.authz.AuthorizeAt(ctx, acc.UserID, loc, domain.ActionRead); err != nil {
 				return
 			}
 			// Re-read the log too: if a wake-up was lost (a notification

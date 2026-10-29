@@ -162,18 +162,23 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 }
 
 const getTaskWorkspaceID = `-- name: GetTaskWorkspaceID :one
-SELECT b.workspace_id
+SELECT b.workspace_id, b.id AS board_id
 FROM tasks t
 JOIN columns c ON c.id = t.column_id
 JOIN boards b ON b.id = c.board_id
 WHERE t.id = $1
 `
 
-func (q *Queries) GetTaskWorkspaceID(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+type GetTaskWorkspaceIDRow struct {
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
+}
+
+func (q *Queries) GetTaskWorkspaceID(ctx context.Context, id uuid.UUID) (GetTaskWorkspaceIDRow, error) {
 	row := q.db.QueryRow(ctx, getTaskWorkspaceID, id)
-	var workspace_id uuid.UUID
-	err := row.Scan(&workspace_id)
-	return workspace_id, err
+	var i GetTaskWorkspaceIDRow
+	err := row.Scan(&i.WorkspaceID, &i.BoardID)
+	return i, err
 }
 
 const lastTaskPosition = `-- name: LastTaskPosition :one

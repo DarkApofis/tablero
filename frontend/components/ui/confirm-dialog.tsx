@@ -34,6 +34,10 @@ export function ConfirmDialog({
     if (!dialog) return;
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
+    // A hidden page (see Modal) must not keep its modal open.
+    return () => {
+      if (dialog.open) dialog.close();
+    };
   }, [open]);
 
   return (

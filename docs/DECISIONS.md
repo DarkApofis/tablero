@@ -74,8 +74,8 @@ Los permisos se definen por **rol dentro de cada workspace** (`admin`, `member`,
 | Leer workspace, miembros, boards, tareas y actividad | ✓ | ✓ | ✓ |
 | Crear, editar, mover y borrar tareas | ✓ | ✓ | |
 | Crear, editar y borrar etiquetas de un board | ✓ | ✓ | |
-| Gestionar boards y columnas (crear, renombrar, borrar, reordenar) | ✓ | | |
-| Gestionar miembros y ajustes | ✓ | | |
+| Gestionar boards y columnas (crear, renombrar, archivar, duplicar, mover, borrar, reordenar, hacer privados) | ✓ | | |
+| Gestionar miembros, invitaciones y ajustes; eliminar el workspace | ✓ | | |
 
 Lo que no está en la matriz se deniega. Gestionar boards y columnas es solo de admin porque la definición original de `member` se limita a tareas; cambiarlo es una línea de la matriz.
 
@@ -86,8 +86,17 @@ Lo que no está en la matriz se deniega. Gestionar boards y columnas es solo de 
   - La creación se serializa por usuario con un advisory lock, así que varias peticiones a la vez no se saltan el límite.
   - Al pasarlo, responde `409 workspace_limit`. `GET /workspaces` devuelve `created` y `max_created` para que el cliente sepa si ofrecer crear otro.
   - Los workspaces anteriores a la columna, o cuyo creador se borró, no cuentan para nadie.
-  - Borrar un workspace no lo puede hacer ningún rol: la API no tiene esa operación.
-- **Boards con columnas iniciales:** `POST /workspaces/{id}/boards` acepta `columns`, que se crean con el board en la misma transacción. La interfaz crea cada board con «Pendiente», «En progreso» y «Hecho», y el admin añade más desde el tablero.
+  - Cuenta los que existen: eliminar uno libera su hueco.
+- **Dirección (`slug`):** cada workspace tiene una dirección única (`/w/<slug>`) que sale de su nombre, numerada si está ocupada (`diseno-de-producto-2`). Se puede elegir al crearlo o cambiarla en los ajustes (`409 slug_taken` si la tiene otro). `GET /workspace-slugs?slug=` dice si está libre, y `GET /workspace-slugs/{slug}` solo la resuelve para sus miembros (para el resto es como si no existiera). La migración 00006 se la da a los que ya existían.
+- **Propietario y eliminación:** quien crea un workspace es su propietario (`owner_id`). Mientras lo es, nadie puede degradarle ni quitarle, ni puede salir (`409 owner_stays_admin`); antes tiene que transferirlo a otro admin (`POST /workspaces/{id}/transfer`, solo el propietario, o cualquier admin si no tiene). Cualquier admin puede eliminar el workspace con todo lo que contiene (la interfaz pide escribir su nombre), salvo el workspace por defecto (`409 default_workspace`). Lo protege la misma transacción con bloqueo que los cambios de membresía, que vuelve a comprobar el rol de quien actúa.
+- **Invitaciones sin correo:** no hay proveedor de email, así que ninguna invitación envía un correo.
+  - Por correo (`POST /workspaces/{id}/invitations`): quien ya tiene cuenta entra al momento con el rol elegido (un miembro conserva el suyo); para el resto queda una invitación de 7 días que se acepta al registrarse con ese correo, en la misma transacción que el registro. Las caducadas siguen en la lista hasta que un admin las renueva o cancela.
+  - Por enlace (`/join/<token>`): un token aleatorio de 128 bits con un rol y 7 días de vida, uno por workspace. Crear otro invalida el anterior, y desactivarlo lo borra. Quien ya es miembro conserva su rol.
+  - El rol por defecto del workspace (`default_role`) es el que proponen las invitaciones y el de un enlace nuevo.
+- **Boards con columnas iniciales:** `POST /workspaces/{id}/boards` acepta `columns`, que se crean con el board en la misma transacción. La interfaz ofrece plantillas: «En blanco», «Kanban básico» (Por hacer, En curso, Hecho) y «Sprint» (Backlog, Sprint, Revisión, Hecho).
+- **Boards privados:** un board con `visibility: private` solo lo ven los admins del workspace y los miembros a los que se dio (`board_members`; quien lo crea, siempre). Para cualquier otro es como un board que no existe: el mismo 403 en todas sus rutas y no aparece en la lista. Se comprueba en el mismo `requireAccess`: los resolvers devuelven el workspace **y el board**, y `Authorizer.AuthorizeAt` consulta su visibilidad. El heartbeat del stream de eventos repite la comprobación (relocalizando el board), así que quien lo pierde, porque se hizo privado o se movió de workspace, deja de recibir eventos en el siguiente ping.
+- **Boards archivados:** dejan la lista (`?archived=true` los muestra aparte) y se pueden leer, pero nada cambia en ellos (`409 board_archived`) salvo lo que hace un admin con el board en sí: restaurarlo, renombrarlo, moverlo o borrarlo. Se aplica en `AuthorizeAt`, así que cubre tareas, columnas y etiquetas sin tocar cada caso de uso.
+- **Duplicar y mover:** duplicar copia columnas, etiquetas, tareas no archivadas (con etiquetas y responsable) y a quién se dio, pero no la actividad, en una sola sentencia SQL con ids generados antes. Mover exige ser admin en los dos workspaces; quien no es miembro del destino sale de la lista privada y sus tareas quedan sin responsable, con un `task_updated` por tarea, como al quitar a un miembro. La actividad se va con el board.
 - **Siempre al menos un admin:** cambiar roles y quitar miembros se hace en una transacción que bloquea la fila del workspace (`SELECT … FOR NO KEY UPDATE`), vuelve a comprobar el rol de quien actúa (por si lo degradaron entre la autorización y la transacción) y cuenta admins antes de escribir. Si el cambio dejaría el workspace sin admin, responde `409 last_admin`. Así, dos admins que se degradan mutuamente a la vez no pueden dejarlo sin ninguno.
 
 **Por qué:** centralizar la decisión en una matriz y un middleware hace que añadir rutas no pueda olvidar la autorización, y que los tests puedan recorrer la matriz completa (rol × acción y actor × ruta).
@@ -291,7 +300,7 @@ Cada conexión cuesta unos **28 KiB** (heap y stack) y dos goroutines: la del ha
 - **Ids no consecutivos:** la secuencia es de toda la tabla, así que un salto de id no indica un hueco. El cliente no debe intentar detectar pérdidas por su cuenta.
 - **`/metrics` sin autenticación** y con valores por instancia. Debe quedar solo en la red interna (por el proxy o un puerto aparte); con varias instancias, Prometheus agrega los valores.
 - **Lo que la prueba no cubre:**
-  - Todos los clientes son el mismo usuario, porque aún no hay invitaciones a un workspace, así que no se prueban ráfagas de `presence.joined` y `presence.left`.
+  - Todos los clientes son el mismo usuario (la prueba no crea cuentas ni invita a nadie), así que no se prueban ráfagas de `presence.joined` y `presence.left`.
   - Tampoco hay red real ni varias instancias: generador, API y base comparten máquina, así que las latencias son optimistas frente a un despliegue.
 
 ## 10. CSRF: token en memoria, comprobación de `Origin` y JSON obligatorio

@@ -2,29 +2,22 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { CreateForm } from "@/components/ui/create-form";
 import { Notice } from "@/components/ui/notice";
 import { ApiError } from "@/lib/api";
 import { roleLabel } from "@/lib/roles";
-import {
-  useBoards,
-  useCreateWorkspace,
-  useMembers,
-  useWorkspaceQuota,
-  useWorkspaces,
-  type Workspace,
-} from "@/lib/workspaces";
+import { useBoards, useMembers, useWorkspaceQuota, useWorkspaces, type Workspace } from "@/lib/workspaces";
+import { CreateWorkspaceDialog } from "./create-workspace-dialog";
 
 /**
  * The home page: the user's workspaces and, while they have not created the
  * most they may, two ways to create one (the header button and the dashed
- * tile after the cards). Whoever creates one is its admin.
+ * tile after the cards), both opening the same dialog.
  */
 export function WorkspacesHome() {
   const [creating, setCreating] = useState(false);
+  const open = () => setCreating(true);
   return (
     <>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -32,17 +25,16 @@ export function WorkspacesHome() {
           <h1 className="text-[28px] font-semibold tracking-[-.02em]">Tus workspaces</h1>
           <p className="mt-1.5 text-sm text-muted">Elige un equipo para ver sus tableros.</p>
         </div>
-        <NewWorkspace open={creating} onOpenChange={setCreating} />
+        <NewWorkspace onOpen={open} />
       </div>
-      <WorkspaceList onCreate={creating ? undefined : () => setCreating(true)} />
+      <WorkspaceList onCreate={open} />
+      <CreateWorkspaceDialog open={creating} onClose={() => setCreating(false)} />
     </>
   );
 }
 
-function NewWorkspace({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function NewWorkspace({ onOpen }: { onOpen: () => void }) {
   const quota = useWorkspaceQuota();
-  const create = useCreateWorkspace();
-  const router = useRouter();
 
   if (!quota.data) return null;
   const { created, max, canCreate } = quota.data;
@@ -53,30 +45,15 @@ function NewWorkspace({ open, onOpenChange }: { open: boolean; onOpenChange: (op
       </p>
     );
   }
-  if (!open) {
-    return (
-      <div className="flex flex-col items-end gap-1">
-        <Button variant="primary" icon="+" onClick={() => onOpenChange(true)}>
-          Crear workspace
-        </Button>
-        <span className="text-[12px] text-faint">
-          {max - created === 1 ? "Puedes crear 1 más" : `Puedes crear ${max - created} más`}
-        </span>
-      </div>
-    );
-  }
   return (
-    <CreateForm
-      label="Nombre del workspace"
-      submitLabel="Crear"
-      autoFocus
-      className="w-full sm:w-[420px]"
-      onCancel={() => onOpenChange(false)}
-      onCreate={async (name) => {
-        const ws = await create.mutateAsync(name);
-        router.push(`/workspaces/${ws.id}`);
-      }}
-    />
+    <div className="flex flex-col items-end gap-1">
+      <Button variant="primary" icon="+" onClick={onOpen}>
+        Crear workspace
+      </Button>
+      <span className="text-[12px] text-faint">
+        {max - created === 1 ? "Puedes crear 1 más" : `Puedes crear ${max - created} más`}
+      </span>
+    </div>
   );
 }
 
@@ -125,12 +102,20 @@ export function WorkspaceList({ onCreate }: { onCreate?: () => void }) {
   }
 
   if (workspaces.length === 0) {
+    const canCreate = onCreate && quota.data?.canCreate;
     return (
       <div className="flex min-h-[180px] flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-8 text-center">
         <p className="font-medium">Todavía no perteneces a ningún workspace</p>
         <p className="text-[13.5px] text-muted">
-          Crea el tuyo con «Crear workspace», o espera a que un admin te agregue a su equipo.
+          {canCreate
+            ? "Crea el tuyo, o espera a que un admin te invite a su equipo."
+            : "Espera a que un admin te invite a su equipo."}
         </p>
+        {canCreate && (
+          <Button variant="primary" icon="+" className="mt-3" onClick={onCreate}>
+            Crear workspace nuevo
+          </Button>
+        )}
       </div>
     );
   }

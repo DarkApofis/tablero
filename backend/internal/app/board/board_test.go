@@ -18,6 +18,8 @@ import (
 // memBoards is an in-memory BoardRepository.
 type memBoards struct {
 	boards     map[domain.ID]domain.Board
+	members    map[domain.ID][]domain.ID // private boards: who was given them
+	outsiders  map[domain.ID]bool        // users who are not members of the workspace
 	columns    map[domain.ID]domain.Column
 	tasks      []domain.TaskDetail
 	taskLabels map[domain.ID][]domain.Label
@@ -26,37 +28,94 @@ type memBoards struct {
 }
 
 func newBoards() *memBoards {
-	return &memBoards{boards: map[domain.ID]domain.Board{}, columns: map[domain.ID]domain.Column{}, taskLabels: map[domain.ID][]domain.Label{}}
+	return &memBoards{
+		boards: map[domain.ID]domain.Board{}, members: map[domain.ID][]domain.ID{}, outsiders: map[domain.ID]bool{},
+		columns: map[domain.ID]domain.Column{}, taskLabels: map[domain.ID][]domain.Label{},
+	}
 }
 
-func (m *memBoards) WorkspaceOfBoard(_ context.Context, id domain.ID) (domain.ID, error) {
+func (m *memBoards) LocationOfBoard(_ context.Context, id domain.ID) (domain.Location, error) {
 	if b, ok := m.boards[id]; ok {
-		return b.WorkspaceID, nil
+		return domain.Location{WorkspaceID: b.WorkspaceID, BoardID: id}, nil
 	}
-	return domain.NilID, domain.ErrNotMember
+	return domain.Location{}, domain.ErrNotMember
 }
 
-func (m *memBoards) WorkspaceOfColumn(ctx context.Context, id domain.ID) (domain.ID, error) {
+func (m *memBoards) LocationOfColumn(ctx context.Context, id domain.ID) (domain.Location, error) {
 	if c, ok := m.columns[id]; ok {
-		return m.WorkspaceOfBoard(ctx, c.BoardID)
+		return m.LocationOfBoard(ctx, c.BoardID)
 	}
-	return domain.NilID, domain.ErrNotMember
+	return domain.Location{}, domain.ErrNotMember
 }
 
-func (m *memBoards) CreateBoard(_ context.Context, ws domain.ID, name string) (domain.Board, error) {
-	b := domain.Board{ID: domain.NewID(), WorkspaceID: ws, Name: name}
+func (m *memBoards) CreateBoard(_ context.Context, ws domain.ID, name string, visibility domain.Visibility, by domain.ID) (domain.Board, error) {
+	b := domain.Board{ID: domain.NewID(), WorkspaceID: ws, Name: name, Visibility: visibility, CreatedBy: &by}
 	m.boards[b.ID] = b
 	return b, nil
 }
 
-func (m *memBoards) ListBoards(_ context.Context, ws domain.ID) ([]domain.Board, error) {
-	var out []domain.Board
+func (m *memBoards) ListBoards(_ context.Context, ws, user domain.ID, seeAll, archived bool) ([]domain.BoardSummary, error) {
+	var out []domain.BoardSummary
 	for _, b := range m.boards {
-		if b.WorkspaceID == ws {
-			out = append(out, b)
+		visible := seeAll || b.Visibility != domain.VisibilityPrivate || slices.Contains(m.members[b.ID], user)
+		if b.WorkspaceID == ws && (b.ArchivedAt != nil) == archived && visible {
+			out = append(out, domain.BoardSummary{Board: b})
 		}
 	}
 	return out, nil
+}
+
+func (m *memBoards) UpdateBoard(_ context.Context, b domain.Board) (domain.Board, error) {
+	if _, ok := m.boards[b.ID]; !ok {
+		return domain.Board{}, domain.ErrBoardNotFound
+	}
+	m.boards[b.ID] = b
+	return b, nil
+}
+
+func (m *memBoards) BoardMembers(_ context.Context, id domain.ID) ([]domain.BoardMember, error) {
+	var out []domain.BoardMember
+	for _, u := range m.members[id] {
+		out = append(out, domain.BoardMember{UserID: u})
+	}
+	return out, nil
+}
+
+func (m *memBoards) SetBoardMembers(_ context.Context, id domain.ID, users []domain.ID) ([]domain.ID, error) {
+	m.members[id] = nil
+	var rejected []domain.ID
+	for _, u := range users {
+		if m.outsiders[u] {
+			rejected = append(rejected, u)
+			continue
+		}
+		m.members[id] = append(m.members[id], u)
+	}
+	return rejected, nil
+}
+
+func (m *memBoards) CopyBoard(_ context.Context, source, target, _ domain.ID, withMembers bool) error {
+	for _, c := range m.columns {
+		if c.BoardID == source {
+			c.ID, c.BoardID = domain.NewID(), target
+			m.columns[c.ID] = c
+		}
+	}
+	if withMembers {
+		m.members[target] = slices.Clone(m.members[source])
+	}
+	return nil
+}
+
+func (m *memBoards) MoveBoard(_ context.Context, id, ws, actor domain.ID) (domain.Board, []domain.ActivityEntry, error) {
+	b, ok := m.boards[id]
+	if !ok {
+		return domain.Board{}, nil, domain.ErrBoardNotFound
+	}
+	b.WorkspaceID = ws
+	m.boards[id] = b
+	// One task lost its assignee, who is not a member there.
+	return b, []domain.ActivityEntry{{ID: 1, WorkspaceID: ws, BoardID: id, ActorID: &actor, Type: domain.ActivityTaskUpdated}}, nil
 }
 
 func (m *memBoards) GetBoard(_ context.Context, id domain.ID) (domain.Board, error) {
@@ -64,16 +123,6 @@ func (m *memBoards) GetBoard(_ context.Context, id domain.ID) (domain.Board, err
 		return b, nil
 	}
 	return domain.Board{}, domain.ErrBoardNotFound
-}
-
-func (m *memBoards) RenameBoard(ctx context.Context, id domain.ID, name string) (domain.Board, error) {
-	b, err := m.GetBoard(ctx, id)
-	if err != nil {
-		return b, err
-	}
-	b.Name = name
-	m.boards[id] = b
-	return b, nil
 }
 
 func (m *memBoards) DeleteBoard(_ context.Context, id domain.ID) error {
@@ -181,8 +230,8 @@ func (m *memBoards) ListBoardTaskLabels(context.Context, domain.ID) (map[domain.
 
 type memLabels struct{ labels map[domain.ID]domain.Label }
 
-func (m *memLabels) WorkspaceOfLabel(context.Context, domain.ID) (domain.ID, error) {
-	return domain.NilID, domain.ErrNotMember
+func (m *memLabels) LocationOfLabel(context.Context, domain.ID) (domain.Location, error) {
+	return domain.Location{}, domain.ErrNotMember
 }
 
 func (m *memLabels) ListLabels(_ context.Context, boardID domain.ID) ([]domain.Label, error) {
@@ -309,7 +358,7 @@ func (e *env) names(t *testing.T, boardID domain.ID) string {
 func TestUseCasesApplyTheRoleMatrix(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
-	b, _ := e.boards.CreateBoard(ctx, e.ws, "B")
+	b, _ := e.boards.CreateBoard(ctx, e.ws, "B", domain.VisibilityWorkspace, domain.NilID)
 	col, _ := e.boards.CreateColumn(ctx, b.ID, "C", 1024)
 	label, _ := e.labels.CreateLabel(ctx, b.ID, "L", "#000000")
 	name := "x"
@@ -319,10 +368,17 @@ func TestUseCasesApplyTheRoleMatrix(t *testing.T) {
 		action domain.Action
 		call   func(domain.Access) error
 	}{
-		{"ListBoards", domain.ActionRead, func(a domain.Access) error { _, err := e.svc.ListBoards(ctx, a); return err }},
+		{"ListBoards", domain.ActionRead, func(a domain.Access) error { _, err := e.svc.ListBoards(ctx, a, false); return err }},
 		{"GetBoardDetail", domain.ActionRead, func(a domain.Access) error { _, err := e.svc.GetBoardDetail(ctx, a, b.ID, false); return err }},
-		{"CreateBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.CreateBoard(ctx, a, "N", nil); return err }},
-		{"RenameBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.RenameBoard(ctx, a, b.ID, "N"); return err }},
+		{"CreateBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.CreateBoard(ctx, a, "N", nil, ""); return err }},
+		{"UpdateBoard", domain.ActionManageBoards, func(a domain.Access) error {
+			_, err := e.svc.UpdateBoard(ctx, a, b.ID, domain.BoardChanges{Name: &name})
+			return err
+		}},
+		{"BoardMembers", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.BoardMembers(ctx, a, b.ID); return err }},
+		{"SetBoardMembers", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.SetBoardMembers(ctx, a, b.ID, nil); return err }},
+		{"DuplicateBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.DuplicateBoard(ctx, a, b.ID, ""); return err }},
+		{"MoveBoard", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.MoveBoard(ctx, a, a, b.ID); return err }},
 		{"CreateColumn", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.CreateColumn(ctx, a, b.ID, "N"); return err }},
 		{"RenameColumn", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.RenameColumn(ctx, a, col.ID, "N"); return err }},
 		{"MoveColumn", domain.ActionManageBoards, func(a domain.Access) error { _, err := e.svc.MoveColumn(ctx, a, col.ID, nil); return err }},
@@ -365,7 +421,7 @@ func TestUseCasesApplyTheRoleMatrix(t *testing.T) {
 func TestCreateColumnAppends(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
-	b, _ := e.boards.CreateBoard(ctx, e.ws, "B")
+	b, _ := e.boards.CreateBoard(ctx, e.ws, "B", domain.VisibilityWorkspace, domain.NilID)
 	var positions []float64
 	for _, n := range []string{"A", "B", "C"} {
 		c, err := e.svc.CreateColumn(ctx, e.as(domain.RoleAdmin), b.ID, "  "+n+" ")
@@ -386,7 +442,7 @@ func TestMoveColumn(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
 	admin := e.as(domain.RoleAdmin)
-	b, _ := e.boards.CreateBoard(ctx, e.ws, "B")
+	b, _ := e.boards.CreateBoard(ctx, e.ws, "B", domain.VisibilityWorkspace, domain.NilID)
 	ids := map[string]domain.ID{}
 	for _, n := range []string{"A", "B", "C", "D"} {
 		c, _ := e.svc.CreateColumn(ctx, admin, b.ID, n)
@@ -428,7 +484,7 @@ func TestMoveColumn(t *testing.T) {
 func TestMoveColumnRebalancesWhenGapIsExhausted(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
-	b, _ := e.boards.CreateBoard(ctx, e.ws, "B")
+	b, _ := e.boards.CreateBoard(ctx, e.ws, "B", domain.VisibilityWorkspace, domain.NilID)
 	a, _ := e.boards.CreateColumn(ctx, b.ID, "A", 1)
 	_, _ = e.boards.CreateColumn(ctx, b.ID, "B", math.Nextafter(1, 2)) // nothing fits between A and B
 	c, _ := e.boards.CreateColumn(ctx, b.ID, "C", 10)
@@ -447,7 +503,7 @@ func TestMoveColumnRebalancesWhenGapIsExhausted(t *testing.T) {
 func TestGetBoardDetailGroupsTasksAndLabels(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
-	b, _ := e.boards.CreateBoard(ctx, e.ws, "B")
+	b, _ := e.boards.CreateBoard(ctx, e.ws, "B", domain.VisibilityWorkspace, domain.NilID)
 	todo, _ := e.boards.CreateColumn(ctx, b.ID, "Todo", 1)
 	empty, _ := e.boards.CreateColumn(ctx, b.ID, "Vacía", 2)
 	bug := domain.Label{ID: domain.NewID(), BoardID: b.ID, Name: "Bug"}
@@ -539,7 +595,7 @@ func TestColumnAndLabelChangesArePublishedAfterCommit(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
 	admin := e.as(domain.RoleAdmin)
-	b, _ := e.boards.CreateBoard(ctx, e.ws, "B")
+	b, _ := e.boards.CreateBoard(ctx, e.ws, "B", domain.VisibilityWorkspace, domain.NilID)
 
 	a, _ := e.svc.CreateColumn(ctx, admin, b.ID, "A")
 	c, _ := e.svc.CreateColumn(ctx, admin, b.ID, "C")
@@ -615,7 +671,7 @@ func TestCreateBoardWithColumns(t *testing.T) {
 	e := newEnv()
 	ctx := context.Background()
 
-	b, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Sprint", []string{" Pendiente ", "En progreso", "Hecho"})
+	b, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Sprint", []string{" Pendiente ", "En progreso", "Hecho"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,19 +684,19 @@ func TestCreateBoardWithColumns(t *testing.T) {
 	}
 
 	// Without columns, as before; with a bad one, nothing at all.
-	if b, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Vacío", nil); err != nil || e.names(t, b.ID) != "" {
+	if b, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Vacío", nil, ""); err != nil || e.names(t, b.ID) != "" {
 		t.Errorf("no columns: %v %q", err, e.names(t, b.ID))
 	}
 	before := len(e.boards.boards)
 	for _, cols := range [][]string{{"Bien", "   "}, make([]string, board.MaxInitialColumns+1)} {
-		if _, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Mal", cols); err == nil {
+		if _, err := e.svc.CreateBoard(ctx, e.as(domain.RoleAdmin), "Mal", cols, ""); err == nil {
 			t.Errorf("columns %q accepted", cols)
 		}
 	}
 	if len(e.boards.boards) != before {
 		t.Errorf("a board was created despite invalid columns")
 	}
-	if _, err := e.svc.CreateBoard(ctx, e.as(domain.RoleMember), "De miembro", []string{"A"}); !errors.Is(err, domain.ErrForbidden) {
+	if _, err := e.svc.CreateBoard(ctx, e.as(domain.RoleMember), "De miembro", []string{"A"}, ""); !errors.Is(err, domain.ErrForbidden) {
 		t.Errorf("member creating a board: %v", err)
 	}
 }

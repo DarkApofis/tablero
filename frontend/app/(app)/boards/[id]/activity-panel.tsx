@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
@@ -9,6 +9,7 @@ import { ApiError, type Schemas } from "@/lib/api";
 import { useMe } from "@/lib/auth";
 import type { BoardDetail } from "@/lib/boards";
 import { priorities, type Priority } from "@/lib/tasks";
+import { relative, useNow } from "@/lib/time";
 import { useMembers } from "@/lib/workspaces";
 import { PanelFrame } from "./panel-frame";
 
@@ -129,8 +130,6 @@ type Ctx = {
 
 const shortDate = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", timeZone: "UTC" });
 const fullDate = new Intl.DateTimeFormat("es", { dateStyle: "long", timeStyle: "short" });
-const clock = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" });
-const dayMonth = new Intl.DateTimeFormat("es", { day: "numeric", month: "short" });
 
 /** "creó la tarea «X» en Por hacer", from the entry's payload. */
 function describe(item: ActivityItem, ctx: Ctx): ReactNode {
@@ -223,26 +222,4 @@ function describeUpdate(p: Payload<"TaskUpdatedPayload">, ctx: Ctx) {
   const fields = keys.map((k) => names[k] ?? k);
   const list = fields.length > 1 ? `${fields.slice(0, -1).join(", ")} y ${fields.at(-1)}` : fields[0];
   return `editó ${title}${list ? ` (${list})` : ""}`;
-}
-
-/** "hace 3 min", "ayer, 17:08"… */
-function relative(iso: string, now: number) {
-  const then = Date.parse(iso);
-  const seconds = Math.max(0, (now - then) / 1000);
-  if (seconds < 45) return "hace un momento";
-  if (seconds < 3600) return `hace ${Math.max(1, Math.round(seconds / 60))} min`;
-  const day = (t: number) => new Date(t).toDateString();
-  if (day(then) === day(now)) return seconds < 6 * 3600 ? `hace ${Math.round(seconds / 3600)} h` : `hoy, ${clock.format(then)}`;
-  if (day(then) === day(now - 86_400_000)) return `ayer, ${clock.format(then)}`;
-  return `${dayMonth.format(then)}, ${clock.format(then)}`;
-}
-
-/** The current time, refreshed every `ms` so relative times stay right. */
-function useNow(ms: number) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(timer);
-  }, [ms]);
-  return now;
 }

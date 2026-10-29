@@ -11,6 +11,9 @@ frontend/e2e/.state/
 frontend/test-results/
 frontend/playwright-report/
 
+# Vídeo de lanzamiento generado con /brag
+brag-output/
+
 # Configuración local de Claude Code
 .claude/settings.local.json
 .neon

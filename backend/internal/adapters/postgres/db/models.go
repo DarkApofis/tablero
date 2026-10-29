@@ -10,7 +10,59 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type BoardVisibility string
+
+const (
+	BoardVisibilityWorkspace BoardVisibility = "workspace"
+	BoardVisibilityPrivate   BoardVisibility = "private"
+)
+
+func (e *BoardVisibility) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BoardVisibility(s)
+	case string:
+		*e = BoardVisibility(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BoardVisibility: %T", src)
+	}
+	return nil
+}
+
+type NullBoardVisibility struct {
+	BoardVisibility BoardVisibility
+	Valid           bool // Valid is true if BoardVisibility is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBoardVisibility) Scan(value interface{}) error {
+	if value == nil {
+		ns.BoardVisibility, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BoardVisibility.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBoardVisibility) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BoardVisibility), nil
+}
+
+func (e BoardVisibility) Valid() bool {
+	switch e {
+	case BoardVisibilityWorkspace,
+		BoardVisibilityPrivate:
+		return true
+	}
+	return false
+}
 
 type TaskPriority string
 
@@ -135,6 +187,15 @@ type Board struct {
 	WorkspaceID uuid.UUID
 	Name        string
 	CreatedAt   time.Time
+	Visibility  BoardVisibility
+	ArchivedAt  *time.Time
+	CreatedBy   uuid.NullUUID
+}
+
+type BoardMember struct {
+	BoardID   uuid.UUID
+	UserID    uuid.UUID
+	CreatedAt time.Time
 }
 
 type Column struct {
@@ -192,10 +253,33 @@ type User struct {
 }
 
 type Workspace struct {
-	ID        uuid.UUID
-	Name      string
-	CreatedAt time.Time
-	CreatedBy uuid.NullUUID
+	ID          uuid.UUID
+	Name        string
+	CreatedAt   time.Time
+	CreatedBy   uuid.NullUUID
+	Slug        pgtype.Text
+	Description string
+	DefaultRole WorkspaceRole
+	OwnerID     uuid.NullUUID
+}
+
+type WorkspaceInvitation struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Email       string
+	Role        WorkspaceRole
+	InvitedBy   uuid.NullUUID
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
+type WorkspaceInviteLink struct {
+	WorkspaceID uuid.UUID
+	Token       string
+	Role        WorkspaceRole
+	CreatedBy   uuid.NullUUID
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
 }
 
 type WorkspaceMember struct {

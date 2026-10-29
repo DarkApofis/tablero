@@ -27,13 +27,13 @@ type labelHandler struct {
 	labels *board.LabelService
 }
 
-// labelWorkspace resolves /labels/{id} to its workspace for requireAccess.
-func (h *labelHandler) labelWorkspace(r *http.Request) (domain.ID, error) {
+// labelWorkspace resolves /labels/{id} to its board and workspace for requireAccess.
+func (h *labelHandler) labelWorkspace(r *http.Request) (domain.Location, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return domain.NilID, err
+		return domain.Location{}, err
 	}
-	return h.labels.WorkspaceOfLabel(r.Context(), id)
+	return h.labels.LocationOfLabel(r.Context(), id)
 }
 
 // list: GET /boards/{id}/labels, ordered by name.

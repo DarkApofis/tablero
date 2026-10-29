@@ -1,6 +1,7 @@
+-- Its creator owns it.
 -- name: CreateWorkspace :one
-INSERT INTO workspaces (name, created_by)
-VALUES ($1, $2)
+INSERT INTO workspaces (name, slug, created_by, owner_id)
+VALUES (@name, @slug, @created_by, @created_by)
 RETURNING *;
 
 -- name: CountWorkspacesCreatedBy :one
@@ -19,7 +20,7 @@ INSERT INTO workspace_members (workspace_id, user_id, role)
 VALUES ($1, $2, $3);
 
 -- name: ListWorkspacesForUser :many
-SELECT w.id, w.name, w.created_at, m.role,
+SELECT w.id, w.name, w.slug, w.created_at, m.role,
        (SELECT count(*) FROM workspace_members c WHERE c.workspace_id = w.id) AS member_count
 FROM workspaces w
 JOIN workspace_members m ON m.workspace_id = w.id
@@ -113,3 +114,54 @@ SELECT @workspace_id::uuid, u.board_id, @actor_id::uuid, 'task_updated',
        )
 FROM unassigned u
 RETURNING *;
+
+-- name: GetWorkspace :one
+SELECT * FROM workspaces
+WHERE id = $1;
+
+-- GetWorkspaceStats counts its members, its boards that are not archived and
+-- all its tasks (what deleting it would delete).
+-- name: GetWorkspaceStats :one
+SELECT (SELECT count(*) FROM workspace_members m WHERE m.workspace_id = @id::uuid) AS member_count,
+       (SELECT count(*) FROM boards b WHERE b.workspace_id = @id::uuid AND b.archived_at IS NULL) AS board_count,
+       (SELECT count(*) FROM tasks t
+        JOIN columns c ON c.id = t.column_id
+        JOIN boards b ON b.id = c.board_id
+        WHERE b.workspace_id = @id::uuid) AS task_count;
+
+-- name: WorkspaceSlugTaken :one
+SELECT EXISTS (SELECT 1 FROM workspaces WHERE slug = $1);
+
+-- name: GetWorkspaceIDBySlug :one
+SELECT id FROM workspaces
+WHERE slug = $1;
+
+-- name: UpdateWorkspace :one
+UPDATE workspaces
+SET name = @name, slug = @slug, description = @description, default_role = @default_role
+WHERE id = @id
+RETURNING *;
+
+-- name: SetWorkspaceOwner :exec
+UPDATE workspaces
+SET owner_id = $2
+WHERE id = $1;
+
+-- Boards, members, invitations and activity go with it (ON DELETE CASCADE).
+-- name: DeleteWorkspace :execrows
+DELETE FROM workspaces
+WHERE id = $1;
+
+-- AddWorkspaceMemberIfAbsent is AddWorkspaceMember for invitations: someone
+-- who is already a member keeps their role, and it affects no row.
+-- name: AddWorkspaceMemberIfAbsent :execrows
+INSERT INTO workspace_members (workspace_id, user_id, role)
+VALUES ($1, $2, $3)
+ON CONFLICT (workspace_id, user_id) DO NOTHING;
+
+-- RemoveMemberFromBoards takes a removed member out of the workspace's
+-- private boards too.
+-- name: RemoveMemberFromBoards :exec
+DELETE FROM board_members bm
+USING boards b
+WHERE b.id = bm.board_id AND b.workspace_id = @workspace_id::uuid AND bm.user_id = @user_id::uuid;

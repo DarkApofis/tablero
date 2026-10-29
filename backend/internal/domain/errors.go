@@ -37,6 +37,22 @@ var (
 	ErrLastAdmin = errors.New("workspace must keep at least one admin")
 	// ErrWorkspaceLimit: the user already created MaxCreatedWorkspaces.
 	ErrWorkspaceLimit = errors.New("workspace limit reached")
+	// ErrSlugTaken: another workspace already has that address.
+	ErrSlugTaken = errors.New("workspace slug taken")
+	// ErrOwnerStaysAdmin: the owner cannot be demoted or removed, nor leave;
+	// they must hand the workspace over first.
+	ErrOwnerStaysAdmin = errors.New("the workspace owner must stay an admin")
+	// ErrNotOwner: only the owner may hand the workspace over.
+	ErrNotOwner = errors.New("only the owner may transfer the workspace")
+	// ErrDefaultWorkspace: the workspace every new account joins cannot be deleted.
+	ErrDefaultWorkspace = errors.New("the default workspace cannot be deleted")
+	// ErrBoardArchived: an archived board can be read, restored, renamed or
+	// deleted by an admin, but nothing on it changes until it is restored.
+	ErrBoardArchived = errors.New("board is archived")
+	// ErrInvitationNotFound: no such invitation in the workspace.
+	ErrInvitationNotFound = fmt.Errorf("invitation %w", ErrNotFound)
+	// ErrInviteLinkInvalid: the link's token is unknown, replaced or expired.
+	ErrInviteLinkInvalid = errors.New("invite link invalid or expired")
 
 	// ErrEmailTaken: an account with that email already exists.
 	ErrEmailTaken = errors.New("email already registered")

@@ -85,14 +85,18 @@ func TestNewAccountsJoinTheDefaultWorkspaceAsMembers(t *testing.T) {
 		{"DELETE", "/columns/" + f.todo.String(), ""},
 		{"PATCH", "/workspaces/" + f.ws.String() + "/members/" + f.ana.ID.String(), `{"role":"viewer"}`},
 		{"DELETE", "/workspaces/" + f.ws.String() + "/members/" + f.ana.ID.String(), ""},
+		{"PATCH", "/workspaces/" + f.ws.String(), `{"name":"Mío"}`},
+		{"DELETE", "/workspaces/" + f.ws.String(), ""},
+		{"POST", "/workspaces/" + f.ws.String() + "/invitations", `{"emails":["x@example.com"],"role":"member"}`},
 	} {
 		if rec := call(h, tc.method, tc.path, tc.body, token); rec.Code != http.StatusForbidden {
 			t.Errorf("%s %s: %d, want 403", tc.method, tc.path, rec.Code)
 		}
 	}
-	// There is no way to delete a workspace at all: no such route.
-	if rec := call(h, "DELETE", "/workspaces/"+f.ws.String(), "", token); rec.Code != http.StatusNotFound {
-		t.Errorf("DELETE /workspaces/{id}: %d, want 404 (no such operation)", rec.Code)
+	// Only admins delete a workspace, and the default one not even them.
+	f.deps.Workspaces = f.deps.Workspaces.WithDefault(domain.ID(f.ws))
+	if rec := call(NewRouter(f.deps), "DELETE", "/workspaces/"+f.ws.String(), "", f.admin.Token); rec.Code != http.StatusConflict {
+		t.Errorf("admin deleting the default workspace: %d %s, want 409", rec.Code, rec.Body)
 	}
 	var exists bool
 	if err := f.pool.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1)", f.ws).Scan(&exists); err != nil || !exists {

@@ -34,12 +34,12 @@ func newBoardFixture(t *testing.T) *boardFixture {
 		tx: postgres.NewTxManager(pool),
 	}
 	f.user, _ = postgres.NewUsers(pool).Create(ctx, uniqueEmail("ana"), "Ana", "x")
-	ws, err := postgres.NewWorkspaces(pool).Create(ctx, "Equipo", f.user.ID)
+	ws, err := postgres.NewWorkspaces(pool).Create(ctx, "Equipo", "", f.user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.ws = ws.ID
-	if f.board, err = f.boards.CreateBoard(ctx, ws.ID, "Sprint"); err != nil {
+	if f.board, err = f.boards.CreateBoard(ctx, ws.ID, "Sprint", domain.VisibilityWorkspace, f.user.ID); err != nil {
 		t.Fatal(err)
 	}
 	for i, name := range []string{"A", "B", "C"} {
@@ -56,15 +56,16 @@ func TestBoardsAndColumns(t *testing.T) {
 	f := newBoardFixture(t)
 	ctx := f.ctx
 
-	if ws, err := f.boards.WorkspaceOfBoard(ctx, f.board.ID); err != nil || ws != f.ws {
-		t.Errorf("WorkspaceOfBoard = %v, %v", ws, err)
+	want := domain.Location{WorkspaceID: f.ws, BoardID: f.board.ID}
+	if loc, err := f.boards.LocationOfBoard(ctx, f.board.ID); err != nil || loc != want {
+		t.Errorf("LocationOfBoard = %v, %v", loc, err)
 	}
-	if ws, err := f.boards.WorkspaceOfColumn(ctx, f.columns[0].ID); err != nil || ws != f.ws {
-		t.Errorf("WorkspaceOfColumn = %v, %v", ws, err)
+	if loc, err := f.boards.LocationOfColumn(ctx, f.columns[0].ID); err != nil || loc != want {
+		t.Errorf("LocationOfColumn = %v, %v", loc, err)
 	}
 	for name, err := range map[string]error{
-		"board":  second(f.boards.WorkspaceOfBoard(ctx, domain.NewID())),
-		"column": second(f.boards.WorkspaceOfColumn(ctx, domain.NewID())),
+		"board":  second(f.boards.LocationOfBoard(ctx, domain.NewID())),
+		"column": second(f.boards.LocationOfColumn(ctx, domain.NewID())),
 	} {
 		if !errors.Is(err, domain.ErrNotMember) {
 			t.Errorf("unknown %s: err = %v, want ErrNotMember", name, err)
@@ -92,8 +93,8 @@ func TestBoardsAndColumns(t *testing.T) {
 	if err := f.boards.DeleteColumn(ctx, domain.NewID()); !errors.Is(err, domain.ErrColumnNotFound) {
 		t.Errorf("delete unknown column: %v", err)
 	}
-	if _, err := f.boards.RenameBoard(ctx, domain.NewID(), "x"); !errors.Is(err, domain.ErrBoardNotFound) {
-		t.Errorf("rename unknown board: %v", err)
+	if _, err := f.boards.UpdateBoard(ctx, domain.Board{ID: domain.NewID(), Name: "x", Visibility: domain.VisibilityWorkspace}); !errors.Is(err, domain.ErrBoardNotFound) {
+		t.Errorf("update unknown board: %v", err)
 	}
 	if err := f.boards.DeleteBoard(ctx, f.board.ID); err != nil {
 		t.Fatal(err)
@@ -181,8 +182,8 @@ func TestLabels(t *testing.T) {
 	if _, err := f.labels.UpdateLabel(ctx, domain.NewID(), &color, nil); !errors.Is(err, domain.ErrLabelNotFound) {
 		t.Errorf("update unknown: %v", err)
 	}
-	if ws, err := f.labels.WorkspaceOfLabel(ctx, l.ID); err != nil || ws != f.ws {
-		t.Errorf("WorkspaceOfLabel = %v, %v", ws, err)
+	if loc, err := f.labels.LocationOfLabel(ctx, l.ID); err != nil || loc != (domain.Location{WorkspaceID: f.ws, BoardID: f.board.ID}) {
+		t.Errorf("LocationOfLabel = %v, %v", loc, err)
 	}
 	if err := f.labels.DeleteLabel(ctx, l.ID); err != nil {
 		t.Fatal(err)
@@ -206,7 +207,9 @@ func TestTxManagerRollsBackEverythingInTheContext(t *testing.T) {
 		}
 		// Nested calls join the outer transaction.
 		return f.tx.InTx(ctx, func(ctx context.Context) error {
-			_, err := f.boards.RenameBoard(ctx, f.board.ID, "Renombrado")
+			b := f.board
+			b.Name = "Renombrado"
+			_, err := f.boards.UpdateBoard(ctx, b)
 			if err != nil {
 				return err
 			}

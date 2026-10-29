@@ -225,11 +225,259 @@ export interface paths {
         get: operations["listWorkspaces"];
         put?: never;
         /**
-         * Crear un workspace (el creador queda como admin)
+         * Crear un workspace (el creador queda como admin y propietario)
          * @description Cada usuario puede crear como máximo 2 workspaces (`max_created` en `GET /workspaces`).
-         *     Pertenecer a otros, por defecto o porque le añadieron, no cuenta.
+         *     Pertenecer a otros, por defecto o porque le añadieron, no cuenta; borrar uno libera
+         *     su hueco. Sin `slug`, la dirección sale del nombre (numerada si está ocupada).
          */
         post: operations["createWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspace-slugs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Si una dirección está libre, o una libre para un nombre
+         * @description Con `slug`, dice si está libre; con `name` (y sin `slug`), propone la dirección que tendría.
+         */
+        get: operations["checkWorkspaceSlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspace-slugs/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * El workspace con esa dirección (solo para sus miembros)
+         * @description A quien no es miembro se le responde igual que si nadie tuviera la dirección (403).
+         */
+        get: operations["findWorkspaceBySlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Un workspace con sus ajustes y lo que contiene
+         * @description Permiso: leer.
+         */
+        get: operations["getWorkspace"];
+        put?: never;
+        post?: never;
+        /**
+         * Eliminar el workspace con todo lo que contiene
+         * @description Permiso: admin. Se borran sus tableros, tareas, miembros e invitaciones. El workspace
+         *     por defecto (al que entran las cuentas nuevas) no se puede eliminar.
+         */
+        delete: operations["deleteWorkspace"];
+        options?: never;
+        head?: never;
+        /**
+         * Cambiar los ajustes del workspace
+         * @description Permiso: admin. Solo cambia los campos presentes.
+         */
+        patch: operations["updateWorkspace"];
+        trace?: never;
+    };
+    "/workspaces/{id}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transferir la propiedad a otro admin
+         * @description Solo el propietario (cualquier admin si no tiene). Mientras lo es, nadie puede
+         *     degradarle ni quitarle, ni puede salir (`owner_stays_admin`).
+         */
+        post: operations["transferWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{id}/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Invitaciones por correo pendientes (incluidas las caducadas)
+         * @description Permiso: admin.
+         */
+        get: operations["listInvitations"];
+        put?: never;
+        /**
+         * Invitar por correo
+         * @description Permiso: admin. No se envía ningún correo. Quien ya tiene cuenta entra al momento
+         *     con ese rol (un miembro conserva el suyo); para el resto queda una invitación de
+         *     7 días que se acepta al registrarse con ese correo.
+         */
+        post: operations["invite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{id}/invitations/{invitationId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renovar una invitación (7 días más desde ahora)
+         * @description Permiso: admin.
+         */
+        post: operations["renewInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{id}/invitations/{invitationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancelar una invitación
+         * @description Permiso: admin.
+         */
+        delete: operations["cancelInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{id}/invite-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * El enlace de invitación del workspace
+         * @description Permiso: admin. `link` es null si no hay; uno caducado se devuelve igual.
+         */
+        get: operations["getInviteLink"];
+        put?: never;
+        /**
+         * Crear un enlace nuevo (el anterior deja de funcionar)
+         * @description Permiso: admin. Caduca a los 7 días.
+         */
+        post: operations["createInviteLink"];
+        /**
+         * Desactivar el enlace
+         * @description Permiso: admin.
+         */
+        delete: operations["deleteInviteLink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invite-links/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        /** Adónde lleva un enlace de invitación */
+        get: operations["inviteLinkInfo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invite-links/{token}/join": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unirse al workspace con el enlace
+         * @description Quien ya es miembro conserva su rol.
+         */
+        post: operations["joinWithInviteLink"];
         delete?: never;
         options?: never;
         head?: never;
@@ -275,15 +523,16 @@ export interface paths {
         post?: never;
         /**
          * Quitar un miembro
-         * @description Permiso: admin. No se puede quitar al último admin. Sus tareas en el workspace
-         *     quedan sin responsable (cada una sube su `version` y registra `task_updated`).
+         * @description Permiso: admin. No se puede quitar al último admin ni al propietario. Sus tareas en
+         *     el workspace quedan sin responsable (cada una sube su `version` y registra
+         *     `task_updated`), y deja de tener los tableros privados que se le dieron.
          */
         delete: operations["removeMember"];
         options?: never;
         head?: never;
         /**
          * Cambiar el rol de un miembro
-         * @description Permiso: admin. No se puede degradar al último admin.
+         * @description Permiso: admin. No se puede degradar al último admin ni al propietario.
          */
         patch: operations["changeMemberRole"];
         trace?: never;
@@ -299,8 +548,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Boards del workspace
-         * @description Permiso: leer.
+         * Boards del workspace que el usuario puede ver
+         * @description Permiso: leer. Los privados solo aparecen a los admins y a quienes se les dieron.
+         *     Por defecto, los no archivados; con `archived=true`, los archivados.
          */
         get: operations["listBoards"];
         put?: never;
@@ -343,10 +593,89 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Renombrar un board
-         * @description Permiso: admin.
+         * Renombrar, cambiar quién lo ve, archivar o restaurar un board
+         * @description Permiso: admin. Solo cambia los campos presentes (al menos uno). En un board
+         *     archivado se puede leer y administrar, pero no cambiar tareas, columnas ni
+         *     etiquetas (`board_archived`) hasta restaurarlo.
          */
-        patch: operations["renameBoard"];
+        patch: operations["updateBoard"];
+        trace?: never;
+    };
+    "/boards/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * A quién se dio un board privado
+         * @description Permiso: admin (los admins lo ven igualmente).
+         */
+        get: operations["listBoardMembers"];
+        /**
+         * Reemplazar a quién se da un board privado
+         * @description Permiso: admin. Todos deben ser miembros del workspace.
+         */
+        put: operations["setBoardMembers"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/boards/{id}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Duplicar un board en su workspace
+         * @description Permiso: admin. Copia columnas, etiquetas y tareas no archivadas (con sus etiquetas
+         *     y responsables) y, si es privado, a quién se dio. No copia la actividad. Sin
+         *     `name`, la copia se llama como el original con « (copia)».
+         */
+        post: operations["duplicateBoard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/boards/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mover un board a otro workspace
+         * @description Permiso: admin en los dos workspaces. Quien no es miembro del destino pierde el
+         *     board: sale de su lista privada y sus tareas quedan sin responsable (cada una
+         *     registra `task_updated`). La actividad se va con el board.
+         */
+        post: operations["moveBoard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/boards/{id}/activity": {
@@ -688,7 +1017,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "workspace_limit" | "demo_unavailable" | "rate_limited" | "csrf_rejected" | "too_many_streams" | "body_too_large" | "unsupported_media_type" | "internal_error";
+        ErrorCode: "invalid_json" | "validation_error" | "invalid_credentials" | "email_taken" | "unauthorized" | "forbidden" | "not_found" | "member_not_found" | "last_admin" | "label_exists" | "version_conflict" | "neighbors_changed" | "method_not_allowed" | "db_unavailable" | "shutting_down" | "guest_limit" | "workspace_limit" | "slug_taken" | "owner_stays_admin" | "default_workspace" | "board_archived" | "invite_invalid" | "demo_unavailable" | "rate_limited" | "csrf_rejected" | "too_many_streams" | "body_too_large" | "unsupported_media_type" | "internal_error";
         TaskConflict: {
             error: components["schemas"]["ErrorDetail"];
             current: components["schemas"]["Task"];
@@ -717,14 +1046,53 @@ export interface components {
             /** @description Segundos hasta que expira el access token. */
             expires_in: number;
         };
+        /** @description Dirección del workspace; se pasa a minúsculas y se recortan los espacios. */
+        Slug: string;
         Workspace: {
             /** Format: uuid */
             id: string;
             name: string;
+            /** @description Null en un workspace creado por la versión anterior durante un despliegue. */
+            slug: string | null;
             /** Format: date-time */
             created_at: string;
             role: components["schemas"]["Role"];
             member_count: number;
+        };
+        WorkspaceDetail: components["schemas"]["Workspace"] & {
+            description: string;
+            /** @description El que las invitaciones ofrecen primero. */
+            default_role: components["schemas"]["Role"];
+            /** Format: uuid */
+            owner_id: string | null;
+            /** @description El usuario es su propietario. */
+            is_owner: boolean;
+            /** @description El usuario puede transferirlo. */
+            may_transfer: boolean;
+            /** @description Boards no archivados. */
+            board_count: number;
+            task_count: number;
+            /** @description Es el workspace por defecto */
+            is_default: boolean;
+        };
+        Invitation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: email */
+            email: string;
+            role: components["schemas"]["Role"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        InviteLink: {
+            token: string;
+            role: components["schemas"]["Role"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
         };
         Member: {
             /** Format: uuid */
@@ -736,14 +1104,49 @@ export interface components {
             /** Format: date-time */
             joined_at: string;
         };
+        /**
+         * @description `workspace`: todos sus miembros, según su rol. `private`: sus admins y a quienes se dio.
+         * @enum {string}
+         */
+        Visibility: "workspace" | "private";
         Board: {
             /** Format: uuid */
             id: string;
             /** Format: uuid */
             workspace_id: string;
             name: string;
+            visibility: components["schemas"]["Visibility"];
+            /** Format: date-time */
+            archived_at: string | null;
+            /** Format: uuid */
+            created_by: string | null;
             /** Format: date-time */
             created_at: string;
+        };
+        BoardSummary: components["schemas"]["Board"] & {
+            /** @description Tareas no archivadas. */
+            task_count: number;
+            /**
+             * Format: date-time
+             * @description Último cambio registrado (o su creación).
+             */
+            updated_at: string;
+            /** @description Quienes lo cambiaron, el más reciente primero. */
+            actors: components["schemas"]["UserRef"][];
+        };
+        UserRef: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
+        BoardMembers: {
+            members: {
+                /** Format: uuid */
+                user_id: string;
+                name: string;
+                /** Format: email */
+                email: string;
+            }[];
         };
         BoardDetail: components["schemas"]["Board"] & {
             /** @description Rol del usuario en el workspace del board. */
@@ -1205,6 +1608,15 @@ export interface components {
                 "application/json": components["schemas"]["TaskConflict"];
             };
         };
+        /** @description El enlace no existe, se reemplazó o caducó (`invite_invalid`). */
+        InviteInvalid: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Error inesperado (`internal_error`); el detalle queda en los logs con el request id. */
         InternalError: {
             headers: {
@@ -1611,7 +2023,10 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NameInput"];
+                "application/json": {
+                    name: string;
+                    slug?: components["schemas"]["Slug"];
+                };
             };
         };
         responses: {
@@ -1626,7 +2041,7 @@ export interface operations {
             };
             400: components["responses"]["InvalidJSON"];
             401: components["responses"]["Unauthorized"];
-            /** @description Ya creó el máximo de workspaces (`workspace_limit`). */
+            /** @description Ya creó el máximo de workspaces (`workspace_limit`) o la dirección está ocupada (`slug_taken`). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1636,6 +2051,474 @@ export interface operations {
                 };
             };
             422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    checkWorkspaceSlug: {
+        parameters: {
+            query?: {
+                slug?: string;
+                name?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La dirección, normalizada, y si está libre. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        slug: string;
+                        available: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    findWorkspaceBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Su id. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description El workspace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDetail"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    deleteWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace eliminado. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Es el workspace por defecto (`default_workspace`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updateWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    slug?: components["schemas"]["Slug"];
+                    description?: string;
+                    default_role?: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description El workspace actualizado. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDetail"];
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description La dirección está ocupada (`slug_taken`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    transferWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    user_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description El workspace, con su nuevo propietario. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDetail"];
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["MemberNotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Las más recientes primero. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invitations: components["schemas"]["Invitation"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    invite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    emails: string[];
+                    role: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description Qué pasó con cada correo. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        added: components["schemas"]["Member"][];
+                        invited: components["schemas"]["Invitation"][];
+                        already_members: string[];
+                    };
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    renewInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La invitación renovada. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invitation"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    cancelInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitación cancelada. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getInviteLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description El enlace, o null. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        link: components["schemas"]["InviteLink"] | null;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    createInviteLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    role: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description El enlace nuevo. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        link: components["schemas"]["InviteLink"];
+                    };
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    deleteInviteLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enlace desactivado (también si no había). */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    inviteLinkInfo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description El workspace y el rol con que se entra. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        workspace_id: string;
+                        workspace_name: string;
+                        role: components["schemas"]["Role"];
+                        /** Format: date-time */
+                        expires_at: string;
+                        already_member: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["InviteInvalid"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    joinWithInviteLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description El workspace al que se unió. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        workspace_id: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["InviteInvalid"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1733,7 +2616,9 @@ export interface operations {
     };
     listBoards: {
         parameters: {
-            query?: never;
+            query?: {
+                archived?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Un id que no es UUID se trata como recurso inexistente (403). */
@@ -1750,7 +2635,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        boards: components["schemas"]["Board"][];
+                        boards: components["schemas"]["BoardSummary"][];
                     };
                 };
             };
@@ -1775,6 +2660,8 @@ export interface operations {
                     name: string;
                     /** @description Columnas con las que nace el board, en orden, en la misma transacción. */
                     columns?: string[];
+                    /** @description Por defecto `workspace`. Uno privado se da a su creador. */
+                    visibility?: components["schemas"]["Visibility"];
                 };
             };
         };
@@ -1850,7 +2737,7 @@ export interface operations {
             500: components["responses"]["InternalError"];
         };
     };
-    renameBoard: {
+    updateBoard: {
         parameters: {
             query?: never;
             header?: never;
@@ -1862,7 +2749,11 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NameInput"];
+                "application/json": {
+                    name?: string;
+                    visibility?: components["schemas"]["Visibility"];
+                    archived?: boolean;
+                };
             };
         };
         responses: {
@@ -1880,6 +2771,136 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listBoardMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Por nombre. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardMembers"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    setBoardMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    user_ids: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Los miembros del board. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardMembers"];
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    duplicateBoard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description La copia. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Board"];
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    moveBoard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Un id que no es UUID se trata como recurso inexistente (403). */
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    workspace_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description El board, ya en el otro workspace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Board"];
+                };
+            };
+            400: components["responses"]["InvalidJSON"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };

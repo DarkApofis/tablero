@@ -18,9 +18,9 @@ func NewLabelService(labels LabelRepository, activity ActivityWriter, tx TxManag
 	return &LabelService{labels: labels, tx: tx, rec: recorder{activity: activity, events: events}}
 }
 
-// WorkspaceOfLabel resolves a label to its workspace for authorization.
-func (s *LabelService) WorkspaceOfLabel(ctx context.Context, labelID domain.ID) (domain.ID, error) {
-	return s.labels.WorkspaceOfLabel(ctx, labelID)
+// LocationOfLabel resolves a label to its board and workspace for authorization.
+func (s *LabelService) LocationOfLabel(ctx context.Context, labelID domain.ID) (domain.Location, error) {
+	return s.labels.LocationOfLabel(ctx, labelID)
 }
 
 func (s *LabelService) List(ctx context.Context, acc domain.Access, boardID domain.ID) ([]domain.Label, error) {

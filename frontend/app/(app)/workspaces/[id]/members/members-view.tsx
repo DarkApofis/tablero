@@ -10,7 +10,8 @@ import { Notice } from "@/components/ui/notice";
 import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/auth";
 import { canManageMembers, roleLabel, type Role } from "@/lib/roles";
-import { useChangeRole, useMembers, useRemoveMember, useWorkspaces, type Member } from "@/lib/workspaces";
+import { useChangeRole, useMembers, useRemoveMember, type Member } from "@/lib/workspaces";
+import { useWorkspaceShell } from "../workspace-shell";
 import { RoleMenu } from "./role-menu";
 
 type Pending =
@@ -22,7 +23,7 @@ export function MembersView({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
   const { data: me } = useMe();
   const members = useMembers(workspaceId);
-  const workspace = useWorkspaces().data?.find((w) => w.id === workspaceId);
+  const { workspace } = useWorkspaceShell();
   const changeRole = useChangeRole(workspaceId);
   const removeMember = useRemoveMember(workspaceId);
   const [confirm, setConfirm] = useState<Pending>(null);
@@ -71,6 +72,8 @@ export function MembersView({ workspaceId }: { workspaceId: string }) {
   const onError = (err: unknown) => {
     if (err instanceof ApiError && err.code === "last_admin") {
       setFailure({ title: "El workspace necesita al menos un admin", text: err.message });
+    } else if (err instanceof ApiError && err.code === "owner_stays_admin") {
+      setFailure({ title: "El propietario sigue siendo admin", text: err.message });
     } else if (err instanceof ApiError && err.status === 403) {
       setFailure({ title: "Tu rol ya no permite gestionar miembros", text: "Actualizamos la lista con tus permisos actuales." });
     } else if (err instanceof ApiError && err.code === "member_not_found") {
@@ -121,13 +124,10 @@ export function MembersView({ workspaceId }: { workspaceId: string }) {
   return (
     <>
       <div>
-        <h1 ref={headingRef} tabIndex={-1} className="text-[26px] font-semibold tracking-[-.02em] outline-none">
+        <h2 ref={headingRef} tabIndex={-1} className="text-[22px] font-semibold tracking-[-.02em] outline-none">
           Miembros
-        </h1>
-        <p className="mt-1.5 text-sm text-muted">
-          {workspace ? `${workspace.name} · ` : ""}
-          {list.length === 1 ? "1 persona" : `${list.length} personas`}
-        </p>
+        </h2>
+        <p className="mt-1.5 text-sm text-muted">{list.length === 1 ? "1 persona" : `${list.length} personas`}</p>
         {!isAdmin && (
           <p className="mt-2 text-[13px] text-faint">Solo los admins pueden cambiar roles o quitar miembros.</p>
         )}
@@ -147,7 +147,10 @@ export function MembersView({ workspaceId }: { workspaceId: string }) {
         <ul className="rounded-[14px] border border-border bg-surface">
           {list.map((m) => {
             const isMe = m.user_id === me.id;
+            const isOwner = m.user_id === workspace.owner_id;
             const lastAdmin = m.role === "admin" && adminCount === 1;
+            // The owner stays an admin until they hand the workspace over (Ajustes).
+            const locked = lastAdmin || isOwner;
             const busy = busyId === m.user_id;
             return (
               <li
@@ -159,25 +162,32 @@ export function MembersView({ workspaceId }: { workspaceId: string }) {
                   <div className="truncate text-sm font-semibold">
                     {m.name}
                     {isMe && <span className="font-normal text-faint"> (tú)</span>}
+                    {isOwner && <span className="font-normal text-faint"> · Propietario</span>}
                   </div>
                   <div className="truncate text-[12.5px] text-muted">{m.email}</div>
                 </div>
                 <div className="flex items-center gap-2">
                   {isAdmin ? (
                     <>
-                      {lastAdmin && <span className="text-xs text-faint">Único admin</span>}
+                      {lastAdmin && !isOwner && <span className="text-xs text-faint">Único admin</span>}
                       <RoleMenu
                         value={m.role}
                         memberName={m.name}
-                        disabled={lastAdmin || (busyId !== null && !busy)}
+                        disabled={locked || (busyId !== null && !busy)}
                         pending={busy && changeRole.isPending}
                         onSelect={(role) => requestRole(m, role)}
                       />
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={lastAdmin || busyId !== null}
-                        title={lastAdmin ? "No se puede quitar al único admin" : undefined}
+                        disabled={locked || busyId !== null}
+                        title={
+                          isOwner
+                            ? "El propietario no puede salir ni ser quitado: antes transfiere el workspace"
+                            : lastAdmin
+                              ? "No se puede quitar al único admin"
+                              : undefined
+                        }
                         aria-label={isMe ? "Salir del workspace" : `Quitar a ${m.name}`}
                         onClick={() => setConfirm({ kind: "remove", member: m })}
                       >

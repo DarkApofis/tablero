@@ -133,17 +133,22 @@ func (q *Queries) GetLabelForUpdate(ctx context.Context, id uuid.UUID) (Label, e
 }
 
 const getLabelWorkspaceID = `-- name: GetLabelWorkspaceID :one
-SELECT b.workspace_id
+SELECT b.workspace_id, b.id AS board_id
 FROM labels l
 JOIN boards b ON b.id = l.board_id
 WHERE l.id = $1
 `
 
-func (q *Queries) GetLabelWorkspaceID(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+type GetLabelWorkspaceIDRow struct {
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
+}
+
+func (q *Queries) GetLabelWorkspaceID(ctx context.Context, id uuid.UUID) (GetLabelWorkspaceIDRow, error) {
 	row := q.db.QueryRow(ctx, getLabelWorkspaceID, id)
-	var workspace_id uuid.UUID
-	err := row.Scan(&workspace_id)
-	return workspace_id, err
+	var i GetLabelWorkspaceIDRow
+	err := row.Scan(&i.WorkspaceID, &i.BoardID)
+	return i, err
 }
 
 const listBoardTaskLabels = `-- name: ListBoardTaskLabels :many

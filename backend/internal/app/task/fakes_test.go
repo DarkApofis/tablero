@@ -62,12 +62,13 @@ func (m *memStore) InReadTx(ctx context.Context, fn func(context.Context) error)
 
 // --- TaskRepository ---
 
-func (m *memStore) WorkspaceOfTask(_ context.Context, id domain.ID) (domain.ID, error) {
+func (m *memStore) LocationOfTask(_ context.Context, id domain.ID) (domain.Location, error) {
 	t, ok := m.tasks[id]
 	if !ok {
-		return domain.NilID, domain.ErrNotMember
+		return domain.Location{}, domain.ErrNotMember
 	}
-	return m.boardWS[m.columns[t.ColumnID].BoardID], nil
+	board := m.columns[t.ColumnID].BoardID
+	return domain.Location{WorkspaceID: m.boardWS[board], BoardID: board}, nil
 }
 
 func (m *memStore) Get(_ context.Context, id domain.ID) (domain.Task, error) {

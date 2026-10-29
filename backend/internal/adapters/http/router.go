@@ -34,6 +34,7 @@ type Deps struct {
 	Auth         *appauth.Service
 	Authorizer   *workspace.Authorizer
 	Workspaces   *workspace.Service
+	Invitations  *workspace.Invitations
 	Boards       *board.Service
 	Tasks        *task.Service
 	Labels       *board.LabelService
@@ -89,16 +90,37 @@ func NewRouter(d Deps) http.Handler {
 	wh := &workspaceHandler{ws: d.Workspaces}
 	mux.Handle("POST /workspaces", authed(wh.create))
 	mux.Handle("GET /workspaces", authed(wh.list))
+	mux.Handle("GET /workspace-slugs", authed(wh.slugAvailability))
+	mux.Handle("GET /workspace-slugs/{slug}", authed(wh.bySlug))
+	mux.Handle("GET /workspaces/{id}", guarded(workspaceFromPath, domain.ActionRead, wh.get))
+	mux.Handle("PATCH /workspaces/{id}", guarded(workspaceFromPath, domain.ActionManageSettings, wh.update))
+	mux.Handle("DELETE /workspaces/{id}", guarded(workspaceFromPath, domain.ActionManageSettings, wh.delete))
+	mux.Handle("POST /workspaces/{id}/transfer", guarded(workspaceFromPath, domain.ActionManageSettings, wh.transfer))
 	mux.Handle("GET /workspaces/{id}/members", guarded(workspaceFromPath, domain.ActionRead, wh.listMembers))
 	mux.Handle("PATCH /workspaces/{id}/members/{userId}", guarded(workspaceFromPath, domain.ActionManageMembers, wh.changeRole))
 	mux.Handle("DELETE /workspaces/{id}/members/{userId}", guarded(workspaceFromPath, domain.ActionManageMembers, wh.removeMember))
 
-	bh := &boardHandler{boards: d.Boards}
+	ih := &invitationHandler{inv: d.Invitations}
+	mux.Handle("GET /workspaces/{id}/invitations", guarded(workspaceFromPath, domain.ActionManageMembers, ih.list))
+	mux.Handle("POST /workspaces/{id}/invitations", guarded(workspaceFromPath, domain.ActionManageMembers, ih.invite))
+	mux.Handle("POST /workspaces/{id}/invitations/{invitationId}/renew", guarded(workspaceFromPath, domain.ActionManageMembers, ih.renew))
+	mux.Handle("DELETE /workspaces/{id}/invitations/{invitationId}", guarded(workspaceFromPath, domain.ActionManageMembers, ih.cancel))
+	mux.Handle("GET /workspaces/{id}/invite-link", guarded(workspaceFromPath, domain.ActionManageMembers, ih.getLink))
+	mux.Handle("POST /workspaces/{id}/invite-link", guarded(workspaceFromPath, domain.ActionManageMembers, ih.createLink))
+	mux.Handle("DELETE /workspaces/{id}/invite-link", guarded(workspaceFromPath, domain.ActionManageMembers, ih.deleteLink))
+	mux.Handle("GET /invite-links/{token}", authed(ih.linkInfo))
+	mux.Handle("POST /invite-links/{token}/join", authed(ih.join))
+
+	bh := &boardHandler{boards: d.Boards, authz: d.Authorizer}
 	mux.Handle("GET /workspaces/{id}/boards", guarded(workspaceFromPath, domain.ActionRead, bh.listBoards))
 	mux.Handle("POST /workspaces/{id}/boards", guarded(workspaceFromPath, domain.ActionManageBoards, bh.createBoard))
 	mux.Handle("GET /boards/{id}", guarded(bh.boardWorkspace, domain.ActionRead, bh.getBoard))
-	mux.Handle("PATCH /boards/{id}", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.renameBoard))
+	mux.Handle("PATCH /boards/{id}", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.updateBoard))
 	mux.Handle("DELETE /boards/{id}", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.deleteBoard))
+	mux.Handle("GET /boards/{id}/members", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.boardMembers))
+	mux.Handle("PUT /boards/{id}/members", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.setBoardMembers))
+	mux.Handle("POST /boards/{id}/duplicate", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.duplicateBoard))
+	mux.Handle("POST /boards/{id}/move", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.moveBoard))
 	mux.Handle("POST /boards/{id}/columns", guarded(bh.boardWorkspace, domain.ActionManageBoards, bh.createColumn))
 	mux.Handle("PATCH /columns/{id}", guarded(bh.columnWorkspace, domain.ActionManageBoards, bh.renameColumn))
 	mux.Handle("DELETE /columns/{id}", guarded(bh.columnWorkspace, domain.ActionManageBoards, bh.deleteColumn))
@@ -108,7 +130,8 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("GET /boards/{id}/activity", guarded(bh.boardWorkspace, domain.ActionRead, ach.list))
 
 	eh := &eventsHandler{
-		streams: d.Streams, authz: d.Authorizer, heartbeat: d.StreamHeartbeat, writeTimeout: d.StreamWriteTimeout,
+		streams: d.Streams, authz: d.Authorizer, locate: d.Boards.LocationOfBoard,
+		heartbeat: d.StreamHeartbeat, writeTimeout: d.StreamWriteTimeout,
 		open: newStreamCounter(d.StreamLimits),
 		delivery: d.Metrics.Histogram("tablero_sse_delivery_seconds",
 			"Time from publishing a board event to flushing it to an SSE client (live events only, not replays).",

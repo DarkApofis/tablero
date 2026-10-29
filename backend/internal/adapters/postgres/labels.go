@@ -16,9 +16,9 @@ type Labels struct{ conn }
 
 func NewLabels(pool *pgxpool.Pool) *Labels { return &Labels{conn{pool}} }
 
-func (r *Labels) WorkspaceOfLabel(ctx context.Context, labelID domain.ID) (domain.ID, error) {
-	id, err := r.q(ctx).GetLabelWorkspaceID(ctx, uuid.UUID(labelID))
-	return domain.ID(id), notFound(err, domain.ErrNotMember)
+func (r *Labels) LocationOfLabel(ctx context.Context, labelID domain.ID) (domain.Location, error) {
+	row, err := r.q(ctx).GetLabelWorkspaceID(ctx, uuid.UUID(labelID))
+	return domain.Location{WorkspaceID: domain.ID(row.WorkspaceID), BoardID: domain.ID(row.BoardID)}, notFound(err, domain.ErrNotMember)
 }
 
 // GetLabelForUpdate reads a label and locks it until the transaction ends;

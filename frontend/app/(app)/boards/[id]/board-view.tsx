@@ -6,9 +6,12 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Notice } from "@/components/ui/notice";
 import { activityQuery } from "@/lib/activity";
 import { ApiError } from "@/lib/api";
+import { useUpdateBoard } from "@/lib/board-admin";
 import { boardQuery, useBoard, type BoardDetail } from "@/lib/boards";
+import { canManageBoards } from "@/lib/roles";
 import { getQueryClient } from "@/lib/query-client";
 import { matchesFilters, readFilters, UNASSIGNED, writeFilters, type TaskFilters } from "@/lib/tasks";
 import { useBoardEvents } from "@/lib/use-board-events";
@@ -42,6 +45,7 @@ const TaskPanel = dynamic(() => import("./task-panel").then((m) => m.TaskPanel),
 const ActivityPanel = dynamic(() => import("./activity-panel").then((m) => m.ActivityPanel), {
   loading: PanelSkeleton,
 });
+const BoardSettingsDialog = dynamic(() => import("./board-settings-dialog").then((m) => m.BoardSettingsDialog));
 
 export function BoardView({ boardId }: { boardId: string }) {
   const board = useBoard(boardId);
@@ -49,6 +53,7 @@ export function BoardView({ boardId }: { boardId: string }) {
   const searchParams = useSearchParams();
   const [today] = useState(() => new Date());
   const [toast, setToast] = useState<Toast | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const dismissToast = useCallback(() => setToast(null), []);
   // Whether this page pushed the history entry of the open panel.
   const pushedPanel = useRef(false);
@@ -91,7 +96,11 @@ export function BoardView({ boardId }: { boardId: string }) {
     );
   }
 
-  const b = board.data;
+  // An archived board is read only for everyone until an admin restores it
+  // (the API refuses the changes); admins keep its settings.
+  const archived = board.data.archived_at !== null;
+  const isAdmin = canManageBoards(board.data.role);
+  const b: BoardDetail = archived ? { ...board.data, role: "viewer" } : board.data;
   const workspaceName = workspaces.data?.find((w) => w.id === b.workspace_id)?.name;
   const tasks = b.columns.flatMap((c) => c.tasks);
   const filters = knownFilters(b, readFilters(searchParams));
@@ -165,7 +174,12 @@ export function BoardView({ boardId }: { boardId: string }) {
         </div>
         {b.role === "viewer" && (
           <span className="whitespace-nowrap rounded-lg border border-border-strong px-2 py-1 text-xs font-semibold text-muted max-sm:hidden">
-            Solo lectura
+            {archived ? "Archivado" : "Solo lectura"}
+          </span>
+        )}
+        {board.data.visibility === "private" && (
+          <span className="whitespace-nowrap rounded-lg border border-border-strong px-2 py-1 text-xs font-semibold text-muted max-sm:hidden">
+            Privado
           </span>
         )}
         <Button
@@ -177,7 +191,22 @@ export function BoardView({ boardId }: { boardId: string }) {
         >
           Actividad
         </Button>
+        {isAdmin && (
+          <button
+            type="button"
+            aria-label="Ajustes del tablero"
+            aria-haspopup="dialog"
+            onClick={() => setSettingsOpen(true)}
+            className="flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border-strong text-muted hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
+          >
+            <span aria-hidden className="tracking-[1px]">
+              ···
+            </span>
+          </button>
+        )}
       </div>
+      {archived && <ArchivedBanner boardId={b.id} canRestore={isAdmin} />}
+      {isAdmin && <BoardSettingsDialog board={board.data} open={settingsOpen} onClose={() => setSettingsOpen(false)} />}
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
@@ -222,6 +251,29 @@ export function BoardView({ boardId }: { boardId: string }) {
       </div>
       <ToastRegion toast={toast} onDismiss={dismissToast} />
     </>
+  );
+}
+
+function ArchivedBanner({ boardId, canRestore }: { boardId: string; canRestore: boolean }) {
+  const restore = useUpdateBoard(boardId);
+  return (
+    <div className="border-b border-border bg-surface px-3 py-2 sm:px-5">
+      <Notice
+        tone="offline"
+        compact
+        title="Este tablero está archivado"
+        actions={
+          canRestore && (
+            <Button size="sm" loading={restore.isPending} onClick={() => restore.mutate({ archived: false })}>
+              Restaurar
+            </Button>
+          )
+        }
+      >
+        Se puede ver, pero no cambiar hasta que un admin lo restaure.
+        {restore.error && <span className="block text-danger">! No se pudo restaurar. Inténtalo de nuevo.</span>}
+      </Notice>
+    </div>
   );
 }
 

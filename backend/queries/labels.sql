@@ -16,7 +16,7 @@ WHERE id = $1
 FOR NO KEY UPDATE;
 
 -- name: GetLabelWorkspaceID :one
-SELECT b.workspace_id
+SELECT b.workspace_id, b.id AS board_id
 FROM labels l
 JOIN boards b ON b.id = l.board_id
 WHERE l.id = $1;

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const addWorkspaceMember = `-- name: AddWorkspaceMember :exec
@@ -26,6 +27,28 @@ type AddWorkspaceMemberParams struct {
 func (q *Queries) AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) error {
 	_, err := q.db.Exec(ctx, addWorkspaceMember, arg.WorkspaceID, arg.UserID, arg.Role)
 	return err
+}
+
+const addWorkspaceMemberIfAbsent = `-- name: AddWorkspaceMemberIfAbsent :execrows
+INSERT INTO workspace_members (workspace_id, user_id, role)
+VALUES ($1, $2, $3)
+ON CONFLICT (workspace_id, user_id) DO NOTHING
+`
+
+type AddWorkspaceMemberIfAbsentParams struct {
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
+	Role        WorkspaceRole
+}
+
+// AddWorkspaceMemberIfAbsent is AddWorkspaceMember for invitations: someone
+// who is already a member keeps their role, and it affects no row.
+func (q *Queries) AddWorkspaceMemberIfAbsent(ctx context.Context, arg AddWorkspaceMemberIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addWorkspaceMemberIfAbsent, arg.WorkspaceID, arg.UserID, arg.Role)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const countWorkspaceAdmins = `-- name: CountWorkspaceAdmins :one
@@ -52,26 +75,46 @@ func (q *Queries) CountWorkspacesCreatedBy(ctx context.Context, createdBy uuid.N
 }
 
 const createWorkspace = `-- name: CreateWorkspace :one
-INSERT INTO workspaces (name, created_by)
-VALUES ($1, $2)
-RETURNING id, name, created_at, created_by
+INSERT INTO workspaces (name, slug, created_by, owner_id)
+VALUES ($1, $2, $3, $3)
+RETURNING id, name, created_at, created_by, slug, description, default_role, owner_id
 `
 
 type CreateWorkspaceParams struct {
 	Name      string
+	Slug      pgtype.Text
 	CreatedBy uuid.NullUUID
 }
 
+// Its creator owns it.
 func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, createWorkspace, arg.Name, arg.CreatedBy)
+	row := q.db.QueryRow(ctx, createWorkspace, arg.Name, arg.Slug, arg.CreatedBy)
 	var i Workspace
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.Slug,
+		&i.Description,
+		&i.DefaultRole,
+		&i.OwnerID,
 	)
 	return i, err
+}
+
+const deleteWorkspace = `-- name: DeleteWorkspace :execrows
+DELETE FROM workspaces
+WHERE id = $1
+`
+
+// Boards, members, invitations and activity go with it (ON DELETE CASCADE).
+func (q *Queries) DeleteWorkspace(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteWorkspace, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteWorkspaceMember = `-- name: DeleteWorkspaceMember :execrows
@@ -109,6 +152,39 @@ func (q *Queries) GetMemberRole(ctx context.Context, arg GetMemberRoleParams) (W
 	return role, err
 }
 
+const getWorkspace = `-- name: GetWorkspace :one
+SELECT id, name, created_at, created_by, slug, description, default_role, owner_id FROM workspaces
+WHERE id = $1
+`
+
+func (q *Queries) GetWorkspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
+	row := q.db.QueryRow(ctx, getWorkspace, id)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.Slug,
+		&i.Description,
+		&i.DefaultRole,
+		&i.OwnerID,
+	)
+	return i, err
+}
+
+const getWorkspaceIDBySlug = `-- name: GetWorkspaceIDBySlug :one
+SELECT id FROM workspaces
+WHERE slug = $1
+`
+
+func (q *Queries) GetWorkspaceIDBySlug(ctx context.Context, slug pgtype.Text) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceIDBySlug, slug)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getWorkspaceMember = `-- name: GetWorkspaceMember :one
 SELECT m.user_id, u.email, u.name, m.role, m.created_at
 FROM workspace_members m
@@ -139,6 +215,30 @@ func (q *Queries) GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMember
 		&i.Role,
 		&i.CreatedAt,
 	)
+	return i, err
+}
+
+const getWorkspaceStats = `-- name: GetWorkspaceStats :one
+SELECT (SELECT count(*) FROM workspace_members m WHERE m.workspace_id = $1::uuid) AS member_count,
+       (SELECT count(*) FROM boards b WHERE b.workspace_id = $1::uuid AND b.archived_at IS NULL) AS board_count,
+       (SELECT count(*) FROM tasks t
+        JOIN columns c ON c.id = t.column_id
+        JOIN boards b ON b.id = c.board_id
+        WHERE b.workspace_id = $1::uuid) AS task_count
+`
+
+type GetWorkspaceStatsRow struct {
+	MemberCount int64
+	BoardCount  int64
+	TaskCount   int64
+}
+
+// GetWorkspaceStats counts its members, its boards that are not archived and
+// all its tasks (what deleting it would delete).
+func (q *Queries) GetWorkspaceStats(ctx context.Context, id uuid.UUID) (GetWorkspaceStatsRow, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceStats, id)
+	var i GetWorkspaceStatsRow
+	err := row.Scan(&i.MemberCount, &i.BoardCount, &i.TaskCount)
 	return i, err
 }
 
@@ -185,7 +285,7 @@ func (q *Queries) ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUI
 }
 
 const listWorkspacesForUser = `-- name: ListWorkspacesForUser :many
-SELECT w.id, w.name, w.created_at, m.role,
+SELECT w.id, w.name, w.slug, w.created_at, m.role,
        (SELECT count(*) FROM workspace_members c WHERE c.workspace_id = w.id) AS member_count
 FROM workspaces w
 JOIN workspace_members m ON m.workspace_id = w.id
@@ -196,6 +296,7 @@ ORDER BY w.created_at, w.id
 type ListWorkspacesForUserRow struct {
 	ID          uuid.UUID
 	Name        string
+	Slug        pgtype.Text
 	CreatedAt   time.Time
 	Role        WorkspaceRole
 	MemberCount int64
@@ -213,6 +314,7 @@ func (q *Queries) ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) (
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
+			&i.Slug,
 			&i.CreatedAt,
 			&i.Role,
 			&i.MemberCount,
@@ -312,6 +414,40 @@ func (q *Queries) LockWorkspaceCreator(ctx context.Context, userID uuid.UUID) er
 	return err
 }
 
+const removeMemberFromBoards = `-- name: RemoveMemberFromBoards :exec
+DELETE FROM board_members bm
+USING boards b
+WHERE b.id = bm.board_id AND b.workspace_id = $1::uuid AND bm.user_id = $2::uuid
+`
+
+type RemoveMemberFromBoardsParams struct {
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
+}
+
+// RemoveMemberFromBoards takes a removed member out of the workspace's
+// private boards too.
+func (q *Queries) RemoveMemberFromBoards(ctx context.Context, arg RemoveMemberFromBoardsParams) error {
+	_, err := q.db.Exec(ctx, removeMemberFromBoards, arg.WorkspaceID, arg.UserID)
+	return err
+}
+
+const setWorkspaceOwner = `-- name: SetWorkspaceOwner :exec
+UPDATE workspaces
+SET owner_id = $2
+WHERE id = $1
+`
+
+type SetWorkspaceOwnerParams struct {
+	ID      uuid.UUID
+	OwnerID uuid.NullUUID
+}
+
+func (q *Queries) SetWorkspaceOwner(ctx context.Context, arg SetWorkspaceOwnerParams) error {
+	_, err := q.db.Exec(ctx, setWorkspaceOwner, arg.ID, arg.OwnerID)
+	return err
+}
+
 const unassignMemberTasks = `-- name: UnassignMemberTasks :many
 WITH unassigned AS (
     UPDATE tasks t
@@ -396,12 +532,60 @@ func (q *Queries) UpdateMemberRole(ctx context.Context, arg UpdateMemberRolePara
 	return result.RowsAffected(), nil
 }
 
+const updateWorkspace = `-- name: UpdateWorkspace :one
+UPDATE workspaces
+SET name = $1, slug = $2, description = $3, default_role = $4
+WHERE id = $5
+RETURNING id, name, created_at, created_by, slug, description, default_role, owner_id
+`
+
+type UpdateWorkspaceParams struct {
+	Name        string
+	Slug        pgtype.Text
+	Description string
+	DefaultRole WorkspaceRole
+	ID          uuid.UUID
+}
+
+func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, updateWorkspace,
+		arg.Name,
+		arg.Slug,
+		arg.Description,
+		arg.DefaultRole,
+		arg.ID,
+	)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.Slug,
+		&i.Description,
+		&i.DefaultRole,
+		&i.OwnerID,
+	)
+	return i, err
+}
+
 const workspaceExists = `-- name: WorkspaceExists :one
 SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1)
 `
 
 func (q *Queries) WorkspaceExists(ctx context.Context, id uuid.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, workspaceExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const workspaceSlugTaken = `-- name: WorkspaceSlugTaken :one
+SELECT EXISTS (SELECT 1 FROM workspaces WHERE slug = $1)
+`
+
+func (q *Queries) WorkspaceSlugTaken(ctx context.Context, slug pgtype.Text) (bool, error) {
+	row := q.db.QueryRow(ctx, workspaceSlugTaken, slug)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

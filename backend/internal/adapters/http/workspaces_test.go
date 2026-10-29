@@ -43,11 +43,61 @@ func newFakeWorkspaceStore(users *fakeStore) *fakeWorkspaceStore {
 	return &fakeWorkspaceStore{users: users, workspaces: map[domain.ID]domain.Workspace{}}
 }
 
-func (f *fakeWorkspaceStore) Create(_ context.Context, name string, createdBy domain.ID) (domain.Workspace, error) {
-	ws := domain.Workspace{ID: domain.NewID(), Name: name, CreatedAt: time.Now()}
+func (f *fakeWorkspaceStore) Create(ctx context.Context, name, slug string, createdBy domain.ID) (domain.Workspace, error) {
+	if taken, _ := f.SlugTaken(ctx, slug); taken {
+		return domain.Workspace{}, domain.ErrSlugTaken
+	}
+	ws := domain.Workspace{ID: domain.NewID(), Name: name, Slug: slug, DefaultRole: domain.RoleMember, OwnerID: &createdBy, CreatedAt: time.Now()}
 	f.workspaces[ws.ID] = ws
 	f.creators = append(f.creators, createdBy)
 	return ws, nil
+}
+
+func (f *fakeWorkspaceStore) Get(_ context.Context, id domain.ID) (domain.Workspace, error) {
+	ws, ok := f.workspaces[id]
+	if !ok {
+		return domain.Workspace{}, domain.ErrNotMember
+	}
+	return ws, nil
+}
+
+func (f *fakeWorkspaceStore) Stats(_ context.Context, id domain.ID) (members, boards, tasks int64, err error) {
+	return f.count(id, ""), 0, 0, nil
+}
+
+func (f *fakeWorkspaceStore) SlugTaken(_ context.Context, slug string) (bool, error) {
+	_, err := f.IDBySlug(context.Background(), slug)
+	return err == nil, nil
+}
+
+func (f *fakeWorkspaceStore) IDBySlug(_ context.Context, slug string) (domain.ID, error) {
+	for _, ws := range f.workspaces {
+		if slug != "" && ws.Slug == slug {
+			return ws.ID, nil
+		}
+	}
+	return domain.NilID, domain.ErrNotMember
+}
+
+func (f *fakeWorkspaceStore) Update(_ context.Context, ws domain.Workspace) (domain.Workspace, error) {
+	if id, err := f.IDBySlug(context.Background(), ws.Slug); err == nil && id != ws.ID {
+		return domain.Workspace{}, domain.ErrSlugTaken
+	}
+	f.workspaces[ws.ID] = ws
+	return ws, nil
+}
+
+func (f *fakeWorkspaceStore) SetOwner(_ context.Context, id, owner domain.ID) error {
+	ws := f.workspaces[id]
+	ws.OwnerID = &owner
+	f.workspaces[id] = ws
+	return nil
+}
+
+func (f *fakeWorkspaceStore) Delete(_ context.Context, id domain.ID) error {
+	delete(f.workspaces, id)
+	f.members = slices.DeleteFunc(f.members, func(m fakeMember) bool { return m.workspaceID == id })
+	return nil
 }
 
 func (f *fakeWorkspaceStore) CountCreatedBy(_ context.Context, userID domain.ID) (int64, error) {
@@ -195,7 +245,7 @@ func (e *wsEnv) user(name string) testUser {
 
 func (e *wsEnv) workspace(members map[testUser]domain.Role) uuid.UUID {
 	e.t.Helper()
-	ws, _ := e.store.Create(context.Background(), "Equipo", domain.NewID())
+	ws, _ := e.store.Create(context.Background(), "Equipo", "", domain.NewID())
 	for u, role := range members {
 		_ = e.store.AddMember(context.Background(), ws.ID, domain.ID(u.ID), role)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/DarkApofis/tablero/backend/internal/adapters/postgres/db"
@@ -20,11 +21,57 @@ type Workspaces struct{ conn }
 
 func NewWorkspaces(pool *pgxpool.Pool) *Workspaces { return &Workspaces{conn{pool}} }
 
-func (r *Workspaces) Create(ctx context.Context, name string, createdBy domain.ID) (domain.Workspace, error) {
+func (r *Workspaces) Create(ctx context.Context, name, slug string, createdBy domain.ID) (domain.Workspace, error) {
 	ws, err := r.q(ctx).CreateWorkspace(ctx, db.CreateWorkspaceParams{
-		Name: name, CreatedBy: uuid.NullUUID{UUID: uuid.UUID(createdBy), Valid: true},
+		Name: name, Slug: optionalText(slug), CreatedBy: uuid.NullUUID{UUID: uuid.UUID(createdBy), Valid: true},
 	})
-	return domain.Workspace{ID: domain.ID(ws.ID), Name: ws.Name, CreatedAt: ws.CreatedAt}, err
+	if pgCode(err) == pgUniqueViolation {
+		return domain.Workspace{}, domain.ErrSlugTaken
+	}
+	return toWorkspace(ws), err
+}
+
+func (r *Workspaces) Get(ctx context.Context, workspaceID domain.ID) (domain.Workspace, error) {
+	ws, err := r.q(ctx).GetWorkspace(ctx, uuid.UUID(workspaceID))
+	return toWorkspace(ws), notFound(err, domain.ErrNotMember)
+}
+
+func (r *Workspaces) Stats(ctx context.Context, workspaceID domain.ID) (members, boards, tasks int64, err error) {
+	s, err := r.q(ctx).GetWorkspaceStats(ctx, uuid.UUID(workspaceID))
+	return s.MemberCount, s.BoardCount, s.TaskCount, err
+}
+
+func (r *Workspaces) SlugTaken(ctx context.Context, slug string) (bool, error) {
+	return r.q(ctx).WorkspaceSlugTaken(ctx, optionalText(slug))
+}
+
+func (r *Workspaces) IDBySlug(ctx context.Context, slug string) (domain.ID, error) {
+	id, err := r.q(ctx).GetWorkspaceIDBySlug(ctx, optionalText(slug))
+	return domain.ID(id), notFound(err, domain.ErrNotMember)
+}
+
+func (r *Workspaces) Update(ctx context.Context, ws domain.Workspace) (domain.Workspace, error) {
+	row, err := r.q(ctx).UpdateWorkspace(ctx, db.UpdateWorkspaceParams{
+		ID: uuid.UUID(ws.ID), Name: ws.Name, Slug: optionalText(ws.Slug),
+		Description: ws.Description, DefaultRole: db.WorkspaceRole(ws.DefaultRole),
+	})
+	if pgCode(err) == pgUniqueViolation {
+		return domain.Workspace{}, domain.ErrSlugTaken
+	}
+	return toWorkspace(row), notFound(err, domain.ErrNotMember)
+}
+
+func (r *Workspaces) SetOwner(ctx context.Context, workspaceID, ownerID domain.ID) error {
+	return r.q(ctx).SetWorkspaceOwner(ctx, db.SetWorkspaceOwnerParams{
+		ID: uuid.UUID(workspaceID), OwnerID: uuid.NullUUID{UUID: uuid.UUID(ownerID), Valid: true},
+	})
+}
+
+// Delete deletes its boards, members, invitations and activity too (ON
+// DELETE CASCADE).
+func (r *Workspaces) Delete(ctx context.Context, workspaceID domain.ID) error {
+	n, err := r.q(ctx).DeleteWorkspace(ctx, uuid.UUID(workspaceID))
+	return deleted(n, err, domain.ErrNotMember)
 }
 
 func (r *Workspaces) CountCreatedBy(ctx context.Context, userID domain.ID) (int64, error) {
@@ -54,7 +101,7 @@ func (r *Workspaces) ListForUser(ctx context.Context, userID domain.ID) ([]domai
 	out := make([]domain.WorkspaceSummary, len(rows))
 	for i, w := range rows {
 		out[i] = domain.WorkspaceSummary{
-			Workspace: domain.Workspace{ID: domain.ID(w.ID), Name: w.Name, CreatedAt: w.CreatedAt},
+			Workspace: domain.Workspace{ID: domain.ID(w.ID), Name: w.Name, Slug: w.Slug.String, CreatedAt: w.CreatedAt},
 			Role:      domain.Role(w.Role), MemberCount: w.MemberCount,
 		}
 	}
@@ -101,11 +148,27 @@ func (r *Workspaces) UpdateRole(ctx context.Context, workspaceID, userID domain.
 	return err
 }
 
+// RemoveMember must run inside a transaction: it takes them off the
+// workspace's private boards too.
 func (r *Workspaces) RemoveMember(ctx context.Context, workspaceID, userID domain.ID) error {
-	_, err := r.q(ctx).DeleteWorkspaceMember(ctx, db.DeleteWorkspaceMemberParams{
+	q := r.q(ctx)
+	if _, err := q.DeleteWorkspaceMember(ctx, db.DeleteWorkspaceMemberParams{
+		WorkspaceID: uuid.UUID(workspaceID), UserID: uuid.UUID(userID),
+	}); err != nil {
+		return err
+	}
+	return q.RemoveMemberFromBoards(ctx, db.RemoveMemberFromBoardsParams{
 		WorkspaceID: uuid.UUID(workspaceID), UserID: uuid.UUID(userID),
 	})
-	return err
+}
+
+// AddMemberIfAbsent adds userID unless they are a member already, who keeps
+// their role; it reports whether it added them.
+func (r *Workspaces) AddMemberIfAbsent(ctx context.Context, workspaceID, userID domain.ID, role domain.Role) (bool, error) {
+	n, err := r.q(ctx).AddWorkspaceMemberIfAbsent(ctx, db.AddWorkspaceMemberIfAbsentParams{
+		WorkspaceID: uuid.UUID(workspaceID), UserID: uuid.UUID(userID), Role: db.WorkspaceRole(role),
+	})
+	return n > 0, err
 }
 
 // UnassignTasks must run inside a transaction. It locks the tasks first and
@@ -148,6 +211,18 @@ func (r *Workspaces) LockMembership(ctx context.Context, workspaceID, userID dom
 		return domain.ErrNotMember
 	}
 	return err
+}
+
+func toWorkspace(w db.Workspace) domain.Workspace {
+	return domain.Workspace{
+		ID: domain.ID(w.ID), Name: w.Name, Slug: w.Slug.String, Description: w.Description,
+		DefaultRole: domain.Role(w.DefaultRole), OwnerID: optionalID(w.OwnerID), CreatedAt: w.CreatedAt,
+	}
+}
+
+// optionalText stores "" as NULL.
+func optionalText(s string) pgtype.Text {
+	return pgtype.Text{String: s, Valid: s != ""}
 }
 
 func toActivity(a db.ActivityLog, actorName string) domain.ActivityEntry {

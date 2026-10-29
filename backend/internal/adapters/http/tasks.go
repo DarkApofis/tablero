@@ -22,12 +22,12 @@ type taskHandler struct {
 	tasks *task.Service
 }
 
-func (h *taskHandler) taskWorkspace(r *http.Request) (domain.ID, error) {
+func (h *taskHandler) taskWorkspace(r *http.Request) (domain.Location, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return domain.NilID, err
+		return domain.Location{}, err
 	}
-	return h.tasks.WorkspaceOfTask(r.Context(), id)
+	return h.tasks.LocationOfTask(r.Context(), id)
 }
 
 // create: POST /columns/{id}/tasks appends a task to the column.

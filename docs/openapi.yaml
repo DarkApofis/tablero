@@ -70,7 +70,9 @@ tags:
   - name: auth
     description: Registro, login y usuario actual.
   - name: workspaces
-    description: Workspaces y sus miembros.
+    description: Workspaces, sus ajustes y sus miembros.
+  - name: invitations
+    description: Invitar a un workspace por correo (sin enviar correos) o con un enlace.
   - name: boards
     description: Tableros de un workspace.
   - name: columns
@@ -378,16 +380,22 @@ paths:
   /workspaces:
     post:
       tags: [workspaces]
-      summary: Crear un workspace (el creador queda como admin)
+      summary: Crear un workspace (el creador queda como admin y propietario)
       operationId: createWorkspace
       description: |
         Cada usuario puede crear como máximo 2 workspaces (`max_created` en `GET /workspaces`).
-        Pertenecer a otros, por defecto o porque le añadieron, no cuenta.
+        Pertenecer a otros, por defecto o porque le añadieron, no cuenta; borrar uno libera
+        su hueco. Sin `slug`, la dirección sale del nombre (numerada si está ocupada).
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/NameInput" }
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                slug: { $ref: "#/components/schemas/Slug" }
       responses:
         "201":
           description: Workspace creado.
@@ -397,7 +405,7 @@ paths:
         "400": { $ref: "#/components/responses/InvalidJSON" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
-          description: Ya creó el máximo de workspaces (`workspace_limit`).
+          description: Ya creó el máximo de workspaces (`workspace_limit`) o la dirección está ocupada (`slug_taken`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -426,6 +434,363 @@ paths:
                     type: integer
                     description: Cuántos puede crear como máximo.
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspace-slugs:
+    get:
+      tags: [workspaces]
+      summary: Si una dirección está libre, o una libre para un nombre
+      operationId: checkWorkspaceSlug
+      description: Con `slug`, dice si está libre; con `name` (y sin `slug`), propone la dirección que tendría.
+      parameters:
+        - { name: slug, in: query, schema: { type: string } }
+        - { name: name, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: La dirección, normalizada, y si está libre.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [slug, available]
+                properties:
+                  slug: { type: string }
+                  available: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspace-slugs/{slug}:
+    parameters:
+      - { name: slug, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [workspaces]
+      summary: El workspace con esa dirección (solo para sus miembros)
+      operationId: findWorkspaceBySlug
+      description: A quien no es miembro se le responde igual que si nadie tuviera la dirección (403).
+      responses:
+        "200":
+          description: Su id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [workspaces]
+      summary: Un workspace con sus ajustes y lo que contiene
+      operationId: getWorkspace
+      description: "Permiso: leer."
+      responses:
+        "200":
+          description: El workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [workspaces]
+      summary: Cambiar los ajustes del workspace
+      operationId: updateWorkspace
+      description: "Permiso: admin. Solo cambia los campos presentes."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                slug: { $ref: "#/components/schemas/Slug" }
+                description: { type: string, maxLength: 500 }
+                default_role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "200":
+          description: El workspace actualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceDetail" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: La dirección está ocupada (`slug_taken`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [workspaces]
+      summary: Eliminar el workspace con todo lo que contiene
+      operationId: deleteWorkspace
+      description: |
+        Permiso: admin. Se borran sus tableros, tareas, miembros e invitaciones. El workspace
+        por defecto (al que entran las cuentas nuevas) no se puede eliminar.
+      responses:
+        "204": { description: Workspace eliminado. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Es el workspace por defecto (`default_workspace`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/transfer:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [workspaces]
+      summary: Transferir la propiedad a otro admin
+      operationId: transferWorkspace
+      description: |
+        Solo el propietario (cualquier admin si no tiene). Mientras lo es, nadie puede
+        degradarle ni quitarle, ni puede salir (`owner_stays_admin`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: El workspace, con su nuevo propietario.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceDetail" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MemberNotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/invitations:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [invitations]
+      summary: Invitaciones por correo pendientes (incluidas las caducadas)
+      operationId: listInvitations
+      description: "Permiso: admin."
+      responses:
+        "200":
+          description: Las más recientes primero.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitations]
+                properties:
+                  invitations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invitation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [invitations]
+      summary: Invitar por correo
+      operationId: invite
+      description: |
+        Permiso: admin. No se envía ningún correo. Quien ya tiene cuenta entra al momento
+        con ese rol (un miembro conserva el suyo); para el resto queda una invitación de
+        7 días que se acepta al registrarse con ese correo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emails, role]
+              properties:
+                emails:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: { type: string, format: email }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "200":
+          description: Qué pasó con cada correo.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [added, invited, already_members]
+                properties:
+                  added:
+                    type: array
+                    items: { $ref: "#/components/schemas/Member" }
+                  invited:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invitation" }
+                  already_members:
+                    type: array
+                    items: { type: string, format: email }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/invitations/{invitationId}/renew:
+    parameters:
+      - { $ref: "#/components/parameters/ID" }
+      - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [invitations]
+      summary: Renovar una invitación (7 días más desde ahora)
+      operationId: renewInvitation
+      description: "Permiso: admin."
+      responses:
+        "200":
+          description: La invitación renovada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invitation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/invitations/{invitationId}:
+    parameters:
+      - { $ref: "#/components/parameters/ID" }
+      - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [invitations]
+      summary: Cancelar una invitación
+      operationId: cancelInvitation
+      description: "Permiso: admin."
+      responses:
+        "204": { description: Invitación cancelada. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /workspaces/{id}/invite-link:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [invitations]
+      summary: El enlace de invitación del workspace
+      operationId: getInviteLink
+      description: "Permiso: admin. `link` es null si no hay; uno caducado se devuelve igual."
+      responses:
+        "200":
+          description: El enlace, o null.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [link]
+                properties:
+                  link:
+                    oneOf:
+                      - $ref: "#/components/schemas/InviteLink"
+                      - type: "null"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [invitations]
+      summary: Crear un enlace nuevo (el anterior deja de funcionar)
+      operationId: createInviteLink
+      description: "Permiso: admin. Caduca a los 7 días."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201":
+          description: El enlace nuevo.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [link]
+                properties:
+                  link: { $ref: "#/components/schemas/InviteLink" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [invitations]
+      summary: Desactivar el enlace
+      operationId: deleteInviteLink
+      description: "Permiso: admin."
+      responses:
+        "204": { description: Enlace desactivado (también si no había). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /invite-links/{token}:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [invitations]
+      summary: Adónde lleva un enlace de invitación
+      operationId: inviteLinkInfo
+      responses:
+        "200":
+          description: El workspace y el rol con que se entra.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace_id, workspace_name, role, expires_at, already_member]
+                properties:
+                  workspace_id: { type: string, format: uuid }
+                  workspace_name: { type: string }
+                  role: { $ref: "#/components/schemas/Role" }
+                  expires_at: { type: string, format: date-time }
+                  already_member: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/InviteInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /invite-links/{token}/join:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [invitations]
+      summary: Unirse al workspace con el enlace
+      operationId: joinWithInviteLink
+      description: Quien ya es miembro conserva su rol.
+      responses:
+        "200":
+          description: El workspace al que se unió.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace_id]
+                properties:
+                  workspace_id: { type: string, format: uuid }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/InviteInvalid" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /workspaces/{id}/members:
@@ -462,7 +827,7 @@ paths:
       tags: [workspaces]
       summary: Cambiar el rol de un miembro
       operationId: changeMemberRole
-      description: "Permiso: admin. No se puede degradar al último admin."
+      description: "Permiso: admin. No se puede degradar al último admin ni al propietario."
       requestBody:
         required: true
         content:
@@ -490,8 +855,9 @@ paths:
       summary: Quitar un miembro
       operationId: removeMember
       description: |
-        Permiso: admin. No se puede quitar al último admin. Sus tareas en el workspace
-        quedan sin responsable (cada una sube su `version` y registra `task_updated`).
+        Permiso: admin. No se puede quitar al último admin ni al propietario. Sus tareas en
+        el workspace quedan sin responsable (cada una sube su `version` y registra
+        `task_updated`), y deja de tener los tableros privados que se le dieron.
       responses:
         "204": { description: Miembro quitado. }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -504,9 +870,15 @@ paths:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:
       tags: [boards]
-      summary: Boards del workspace
+      summary: Boards del workspace que el usuario puede ver
       operationId: listBoards
-      description: "Permiso: leer."
+      description: |
+        Permiso: leer. Los privados solo aparecen a los admins y a quienes se les dieron.
+        Por defecto, los no archivados; con `archived=true`, los archivados.
+      parameters:
+        - name: archived
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Boards por fecha de creación.
@@ -518,7 +890,7 @@ paths:
                 properties:
                   boards:
                     type: array
-                    items: { $ref: "#/components/schemas/Board" }
+                    items: { $ref: "#/components/schemas/BoardSummary" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -541,6 +913,9 @@ paths:
                   maxItems: 20
                   items: { type: string, maxLength: 100 }
                   description: Columnas con las que nace el board, en orden, en la misma transacción.
+                visibility:
+                  $ref: "#/components/schemas/Visibility"
+                  description: Por defecto `workspace`. Uno privado se da a su creador.
       responses:
         "201":
           description: Board creado.
@@ -581,14 +956,22 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
     patch:
       tags: [boards]
-      summary: Renombrar un board
-      operationId: renameBoard
-      description: "Permiso: admin."
+      summary: Renombrar, cambiar quién lo ve, archivar o restaurar un board
+      operationId: updateBoard
+      description: |
+        Permiso: admin. Solo cambia los campos presentes (al menos uno). En un board
+        archivado se puede leer y administrar, pero no cambiar tareas, columnas ni
+        etiquetas (`board_archived`) hasta restaurarlo.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/NameInput" }
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                visibility: { $ref: "#/components/schemas/Visibility" }
+                archived: { type: boolean }
       responses:
         "200":
           description: Board actualizado.
@@ -608,6 +991,113 @@ paths:
       description: "Permiso: admin."
       responses:
         "204": { description: Board borrado. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/members:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [boards]
+      summary: A quién se dio un board privado
+      operationId: listBoardMembers
+      description: "Permiso: admin (los admins lo ven igualmente)."
+      responses:
+        "200":
+          description: Por nombre.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BoardMembers" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [boards]
+      summary: Reemplazar a quién se da un board privado
+      operationId: setBoardMembers
+      description: "Permiso: admin. Todos deben ser miembros del workspace."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  maxItems: 200
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Los miembros del board.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BoardMembers" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/duplicate:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [boards]
+      summary: Duplicar un board en su workspace
+      operationId: duplicateBoard
+      description: |
+        Permiso: admin. Copia columnas, etiquetas y tareas no archivadas (con sus etiquetas
+        y responsables) y, si es privado, a quién se dio. No copia la actividad. Sin
+        `name`, la copia se llama como el original con « (copia)».
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 100 }
+      responses:
+        "201":
+          description: La copia.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Board" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /boards/{id}/move:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [boards]
+      summary: Mover un board a otro workspace
+      operationId: moveBoard
+      description: |
+        Permiso: admin en los dos workspaces. Quien no es miembro del destino pierde el
+        board: sale de su lista privada y sus tareas quedan sin responsable (cada una
+        registra `task_updated`). La actividad se va con el board.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_id]
+              properties:
+                workspace_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: El board, ya en el otro workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Board" }
+        "400": { $ref: "#/components/responses/InvalidJSON" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1284,6 +1774,11 @@ components:
               created_by: f38cd4ae-1c3e-4541-9e60-c47205c33d13
               created_at: "2026-10-23T19:30:04.744832-05:00"
               updated_at: "2026-10-23T19:30:04.758611-05:00"
+    InviteInvalid:
+      description: El enlace no existe, se reemplazó o caducó (`invite_invalid`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     InternalError:
       description: Error inesperado (`internal_error`); el detalle queda en los logs con el request id.
       content:
@@ -1328,6 +1823,11 @@ components:
         - shutting_down
         - guest_limit
         - workspace_limit
+        - slug_taken
+        - owner_stays_admin
+        - default_workspace
+        - board_archived
+        - invite_invalid
         - demo_unavailable
         - rate_limited
         - csrf_rejected
@@ -1371,15 +1871,61 @@ components:
         token_type: { type: string, const: Bearer }
         expires_in: { type: integer, description: Segundos hasta que expira el access token. }
 
+    Slug:
+      type: string
+      minLength: 3
+      maxLength: 40
+      pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+      description: Dirección del workspace; se pasa a minúsculas y se recortan los espacios.
+
     Workspace:
       type: object
-      required: [id, name, created_at, role, member_count]
+      required: [id, name, slug, created_at, role, member_count]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
+        slug:
+          type: [string, "null"]
+          description: Null en un workspace creado por la versión anterior durante un despliegue.
         created_at: { type: string, format: date-time }
         role: { $ref: "#/components/schemas/Role" }
         member_count: { type: integer }
+
+    WorkspaceDetail:
+      allOf:
+        - $ref: "#/components/schemas/Workspace"
+        - type: object
+          required: [description, default_role, owner_id, is_owner, may_transfer, board_count, task_count, is_default]
+          properties:
+            description: { type: string }
+            default_role:
+              $ref: "#/components/schemas/Role"
+              description: El que las invitaciones ofrecen primero.
+            owner_id: { type: [string, "null"], format: uuid }
+            is_owner: { type: boolean, description: El usuario es su propietario. }
+            may_transfer: { type: boolean, description: El usuario puede transferirlo. }
+            board_count: { type: integer, description: Boards no archivados. }
+            task_count: { type: integer }
+            is_default: { type: boolean, description: Es el workspace por defecto, que no se puede eliminar. }
+
+    Invitation:
+      type: object
+      required: [id, email, role, created_at, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    InviteLink:
+      type: object
+      required: [token, role, created_at, expires_at]
+      properties:
+        token: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
 
     Member:
       type: object
@@ -1391,14 +1937,57 @@ components:
         role: { $ref: "#/components/schemas/Role" }
         joined_at: { type: string, format: date-time }
 
+    Visibility:
+      type: string
+      enum: [workspace, private]
+      description: "`workspace`: todos sus miembros, según su rol. `private`: sus admins y a quienes se dio."
+
     Board:
       type: object
-      required: [id, workspace_id, name, created_at]
+      required: [id, workspace_id, name, visibility, archived_at, created_by, created_at]
       properties:
         id: { type: string, format: uuid }
         workspace_id: { type: string, format: uuid }
         name: { type: string }
+        visibility: { $ref: "#/components/schemas/Visibility" }
+        archived_at: { type: [string, "null"], format: date-time }
+        created_by: { type: [string, "null"], format: uuid }
         created_at: { type: string, format: date-time }
+
+    BoardSummary:
+      allOf:
+        - $ref: "#/components/schemas/Board"
+        - type: object
+          required: [task_count, updated_at, actors]
+          properties:
+            task_count: { type: integer, description: Tareas no archivadas. }
+            updated_at: { type: string, format: date-time, description: Último cambio registrado (o su creación). }
+            actors:
+              type: array
+              maxItems: 4
+              description: Quienes lo cambiaron, el más reciente primero.
+              items: { $ref: "#/components/schemas/UserRef" }
+
+    UserRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    BoardMembers:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            required: [user_id, name, email]
+            properties:
+              user_id: { type: string, format: uuid }
+              name: { type: string }
+              email: { type: string, format: email }
 
     BoardDetail:
       allOf:

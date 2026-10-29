@@ -73,15 +73,16 @@ func instanceDeps(pool *pgxpool.Pool, tokens *token.Issuer, hub *events.Hub, pub
 	activity := postgres.NewActivity(pool)
 	workspaces := postgres.NewWorkspaces(pool)
 	return Deps{
-		Ready:      pool,
-		Auth:       newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
-		Authorizer: workspace.NewAuthorizer(workspaces),
-		Workspaces: workspace.NewService(workspaces, txm, pub),
-		Boards:     board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), activity, txm, pub),
-		Tasks:      task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, activity, txm, pub, systemClock{}),
-		Labels:     board.NewLabelService(postgres.NewLabels(pool), activity, txm, pub),
-		Activity:   board.NewActivityService(activity),
-		Streams:    board.NewStreamService(hub, activity, postgres.NewUsers(pool), board.DefaultReplayLimit),
+		Ready:       pool,
+		Auth:        newAuthService(postgres.NewUsers(pool), tokens, time.Hour),
+		Authorizer:  workspace.NewAuthorizer(workspaces).WithBoards(postgres.NewBoards(pool)),
+		Workspaces:  workspace.NewService(workspaces, txm, pub),
+		Invitations: workspace.NewInvitations(postgres.NewInvitations(workspaces), postgres.NewUsers(pool), txm, systemClock{}),
+		Boards:      board.NewService(postgres.NewBoards(pool), postgres.NewLabels(pool), activity, txm, pub),
+		Tasks:       task.NewService(postgres.NewTasks(pool), postgres.NewBoards(pool), workspaces, activity, txm, pub, systemClock{}),
+		Labels:      board.NewLabelService(postgres.NewLabels(pool), activity, txm, pub),
+		Activity:    board.NewActivityService(activity),
+		Streams:     board.NewStreamService(hub, activity, postgres.NewUsers(pool), board.DefaultReplayLimit),
 	}
 }
 
@@ -129,7 +130,7 @@ func (e *dbEnv) workspace(members map[testUser]db.WorkspaceRole) uuid.UUID {
 
 func (e *dbEnv) board(wsID uuid.UUID, name string) uuid.UUID {
 	e.t.Helper()
-	b, err := e.q.CreateBoard(context.Background(), db.CreateBoardParams{WorkspaceID: wsID, Name: name})
+	b, err := e.q.CreateBoard(context.Background(), db.CreateBoardParams{WorkspaceID: wsID, Name: name, Visibility: db.BoardVisibilityWorkspace})
 	if err != nil {
 		e.t.Fatal(err)
 	}

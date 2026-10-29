@@ -51,11 +51,11 @@ type PasswordHasher interface {
 }
 
 type Workspaces interface {
-	Create(ctx context.Context, creatorID domain.ID, name string) (domain.WorkspaceSummary, error)
+	Create(ctx context.Context, creatorID domain.ID, name, slug string) (domain.WorkspaceSummary, error)
 }
 
 type Boards interface {
-	CreateBoard(ctx context.Context, acc domain.Access, name string, columns []string) (domain.Board, error)
+	CreateBoard(ctx context.Context, acc domain.Access, name string, columns []string, visibility domain.Visibility) (domain.Board, error)
 	CreateColumn(ctx context.Context, acc domain.Access, boardID domain.ID, name string) (domain.Column, error)
 }
 
@@ -164,7 +164,7 @@ func (s *Service) Seed(ctx context.Context) (Result, error) {
 			return fmt.Errorf("find workspace: %w", err)
 		}
 		if !found {
-			ws, err := s.d.Workspaces.Create(ctx, admin.ID, WorkspaceName)
+			ws, err := s.d.Workspaces.Create(ctx, admin.ID, WorkspaceName, "")
 			if err != nil {
 				return fmt.Errorf("create workspace: %w", err)
 			}
@@ -190,7 +190,7 @@ func (s *Service) Seed(ctx context.Context) (Result, error) {
 			return fmt.Errorf("find board: %w", err)
 		}
 		if !found {
-			b, err := s.d.Boards.CreateBoard(ctx, acc("ana"), BoardName, nil) // columns: script()
+			b, err := s.d.Boards.CreateBoard(ctx, acc("ana"), BoardName, nil, domain.VisibilityWorkspace) // columns: script()
 			if err != nil {
 				return fmt.Errorf("create board: %w", err)
 			}

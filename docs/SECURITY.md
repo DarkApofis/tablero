@@ -39,6 +39,8 @@ Modelo de amenazas breve de Tablero: qué se protege, frente a quién, cómo y q
 | *Sniffing* y fugas por *referrer* | `nosniff`; `Referrer-Policy: no-referrer` (API) y `strict-origin-when-cross-origin` (frontend) | |
 | Tráfico sin cifrar | Cookies `Secure` (`COOKIE_SECURE=true` por defecto); HSTS cuando la petición llega por HTTPS | `withSecurityHeaders`, `next.config.ts` |
 | Escalada entre workspaces | Toda ruta se autoriza con el rol del usuario en el workspace del recurso. Un recurso ajeno, uno inexistente y un id mal formado dan el mismo `403` | decisión 5 |
+| Boards privados vistos por quien no debe | La visibilidad se comprueba en el mismo `requireAccess` que el rol, para todas las rutas del board (también el stream, en cada heartbeat). Para quien no lo tiene, el board es indistinguible de uno inexistente | decisión 5 |
+| Adivinar enlaces de invitación | Token aleatorio de 128 bits (`crypto/rand`), caduca a los 7 días y se invalida al crear otro | `workspace.Invitations` |
 | Inyección SQL | Todas las consultas son de sqlc, con parámetros. Las únicas sentencias armadas a mano (`LISTEN`, y `CREATE`/`DROP DATABASE` en tests) llevan identificadores constantes o generados, citados con `pgx.Identifier` | `queries/`, `eventbus.go`, `pgtest` |
 | Cuerpos enormes o clientes lentos (*slowloris*) | Body ≤ 256 KiB (`413`); cabeceras ≤ 32 KiB y en 5 s; petición completa en 15 s; escrituras con plazo de 30 s (10 s por mensaje en los streams) | `withBodyLimit`, `cmd/api/main.go` |
 | Agotar conexiones con streams | `SSE_MAX_PER_USER` (10) y `SSE_MAX_PER_BOARD` (1000) por instancia (`429 too_many_streams`); clientes lentos expulsados (decisión 9) | `streamCounter` |
@@ -54,7 +56,9 @@ Modelo de amenazas breve de Tablero: qué se protege, frente a quién, cómo y q
 - **`TRUST_PROXY` mal puesto.** Activado sin proxy delante, cualquiera falsifica su IP con `X-Forwarded-For` y esquiva el límite por IP. Desactivado detrás de un proxy, todos los clientes comparten la IP del proxy.
 - **`/metrics` sin autenticación:** debe quedar en la red interna (decisión 9).
 - **El modo demo publica credenciales,** también la del admin. No debe activarse sobre una base con datos reales (README, «Modo demo»).
-- **Sin verificación de correo ni 2FA.** El registro revela si un correo ya existe (`409`).
+- **Sin verificación de correo ni 2FA.** El registro revela si un correo ya existe (`409`). Por la misma razón, quien registre primero un correo invitado entra al workspace con esa invitación; y un admin que invita sabe, por la respuesta, si ese correo ya tenía cuenta.
+- **Los enlaces de invitación se guardan en claro,** para que un admin pueda volver a copiarlos. Quien lea la base podría usarlos; pero quien lee la base ya tiene acceso a todo lo demás.
+- **Las direcciones de workspace son públicas a medias:** cualquier usuario con sesión puede saber si una dirección está ocupada (`GET /workspace-slugs?slug=`), no a qué workspace corresponde.
 - **Purga de `refresh_tokens` caducados:** pendiente.
 - **`golang.org/x/crypto`** arrastra un aviso (GO-2026-5932) sobre `openpgp`, que el código no usa y que no tiene corrección.
 

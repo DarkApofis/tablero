@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
@@ -14,17 +17,35 @@ import (
 // Ports.
 
 type BoardRepository interface {
-	// WorkspaceOfBoard and WorkspaceOfColumn return domain.ErrNotMember when
+	// LocationOfBoard and LocationOfColumn return domain.ErrNotMember when
 	// the board or column does not exist, so it looks like a forbidden one.
-	WorkspaceOfBoard(ctx context.Context, boardID domain.ID) (domain.ID, error)
-	WorkspaceOfColumn(ctx context.Context, columnID domain.ID) (domain.ID, error)
+	LocationOfBoard(ctx context.Context, boardID domain.ID) (domain.Location, error)
+	LocationOfColumn(ctx context.Context, columnID domain.ID) (domain.Location, error)
 
-	CreateBoard(ctx context.Context, workspaceID domain.ID, name string) (domain.Board, error)
-	ListBoards(ctx context.Context, workspaceID domain.ID) ([]domain.Board, error)
-	// GetBoard, RenameBoard and DeleteBoard return domain.ErrBoardNotFound.
+	CreateBoard(ctx context.Context, workspaceID domain.ID, name string, visibility domain.Visibility, createdBy domain.ID) (domain.Board, error)
+	// ListBoards lists the workspace's boards that are archived (or not) and
+	// that userID may see: with seeAll every one, otherwise those open to the
+	// workspace and the private ones given to them.
+	ListBoards(ctx context.Context, workspaceID, userID domain.ID, seeAll, archived bool) ([]domain.BoardSummary, error)
+	// GetBoard, UpdateBoard and DeleteBoard return domain.ErrBoardNotFound.
 	GetBoard(ctx context.Context, boardID domain.ID) (domain.Board, error)
-	RenameBoard(ctx context.Context, boardID domain.ID, name string) (domain.Board, error)
+	// UpdateBoard stores its name, visibility and archived time.
+	UpdateBoard(ctx context.Context, b domain.Board) (domain.Board, error)
 	DeleteBoard(ctx context.Context, boardID domain.ID) error
+	// BoardMembers lists who was given a private board.
+	BoardMembers(ctx context.Context, boardID domain.ID) ([]domain.BoardMember, error)
+	// SetBoardMembers replaces them; it returns the ids that are not members
+	// of the board's workspace, which were left out.
+	SetBoardMembers(ctx context.Context, boardID domain.ID, userIDs []domain.ID) (rejected []domain.ID, err error)
+	// CopyBoard copies the columns, labels and tasks that are not archived of
+	// source into target, an empty board, and who source was given to if
+	// withMembers; actorID is the creator of the copied tasks.
+	CopyBoard(ctx context.Context, sourceID, targetID, actorID domain.ID, withMembers bool) error
+	// MoveBoard puts the board, with its log, in another workspace: whoever
+	// is not a member there is taken off its private list and unassigned
+	// from its tasks (logged as edits by actorID). It must run in a
+	// transaction, and returns the entries it logged.
+	MoveBoard(ctx context.Context, boardID, workspaceID, actorID domain.ID) (domain.Board, []domain.ActivityEntry, error)
 	// LockBoard serializes position changes inside a board until the transaction ends.
 	LockBoard(ctx context.Context, boardID domain.ID) error
 
@@ -52,8 +73,8 @@ type BoardRepository interface {
 }
 
 type LabelRepository interface {
-	// WorkspaceOfLabel returns domain.ErrNotMember when the label does not exist.
-	WorkspaceOfLabel(ctx context.Context, labelID domain.ID) (domain.ID, error)
+	// LocationOfLabel returns domain.ErrNotMember when the label does not exist.
+	LocationOfLabel(ctx context.Context, labelID domain.ID) (domain.Location, error)
 	// ListLabels returns a board's labels ordered by name.
 	ListLabels(ctx context.Context, boardID domain.ID) ([]domain.Label, error)
 	// CreateLabel returns domain.ErrLabelNameTaken or, if the board is gone,
@@ -93,14 +114,14 @@ func NewService(boards BoardRepository, labels LabelRepository, activity Activit
 	return &Service{boards: boards, labels: labels, tx: tx, rec: recorder{activity: activity, events: events}}
 }
 
-// WorkspaceOfBoard resolves a board to its workspace for authorization.
-func (s *Service) WorkspaceOfBoard(ctx context.Context, boardID domain.ID) (domain.ID, error) {
-	return s.boards.WorkspaceOfBoard(ctx, boardID)
+// LocationOfBoard resolves a board to its workspace for authorization.
+func (s *Service) LocationOfBoard(ctx context.Context, boardID domain.ID) (domain.Location, error) {
+	return s.boards.LocationOfBoard(ctx, boardID)
 }
 
-// WorkspaceOfColumn resolves a column to its workspace for authorization.
-func (s *Service) WorkspaceOfColumn(ctx context.Context, columnID domain.ID) (domain.ID, error) {
-	return s.boards.WorkspaceOfColumn(ctx, columnID)
+// LocationOfColumn resolves a column to its board and workspace for authorization.
+func (s *Service) LocationOfColumn(ctx context.Context, columnID domain.ID) (domain.Location, error) {
+	return s.boards.LocationOfColumn(ctx, columnID)
 }
 
 // --- boards ---
@@ -109,14 +130,22 @@ func (s *Service) WorkspaceOfColumn(ctx context.Context, columnID domain.ID) (do
 const MaxInitialColumns = 20
 
 // CreateBoard makes a board with the given columns, in order, all in one
-// transaction: a board is never left half made.
-func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name string, columns []string) (domain.Board, error) {
+// transaction: a board is never left half made. An empty visibility is
+// domain.VisibilityWorkspace; a private board is given to its creator, so
+// they keep it if they stop being an admin.
+func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name string, columns []string, visibility domain.Visibility) (domain.Board, error) {
 	if err := acc.Require(domain.ActionManageBoards); err != nil {
 		return domain.Board{}, err
 	}
 	name, err := domain.Name(name, domain.MaxBoardNameLen)
 	if err != nil {
 		return domain.Board{}, err
+	}
+	if visibility == "" {
+		visibility = domain.VisibilityWorkspace
+	}
+	if !visibility.Valid() {
+		return domain.Board{}, domain.Invalid("visibility", "La visibilidad debe ser workspace o private")
 	}
 	if len(columns) > MaxInitialColumns {
 		return domain.Board{}, domain.Invalid("columns", fmt.Sprintf("Como mucho %d columnas", MaxInitialColumns))
@@ -131,8 +160,13 @@ func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name strin
 	var logged []domain.ActivityEntry
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
 		var err error
-		if b, err = s.boards.CreateBoard(ctx, acc.WorkspaceID, name); err != nil {
+		if b, err = s.boards.CreateBoard(ctx, acc.WorkspaceID, name, visibility, acc.UserID); err != nil {
 			return err
+		}
+		if visibility == domain.VisibilityPrivate {
+			if _, err := s.boards.SetBoardMembers(ctx, b.ID, []domain.ID{acc.UserID}); err != nil {
+				return fmt.Errorf("give board to creator: %w", err)
+			}
 		}
 		for _, c := range columns {
 			_, entry, err := s.appendColumn(ctx, acc, b.ID, c)
@@ -152,11 +186,13 @@ func (s *Service) CreateBoard(ctx context.Context, acc domain.Access, name strin
 	return b, nil
 }
 
-func (s *Service) ListBoards(ctx context.Context, acc domain.Access) ([]domain.Board, error) {
+// ListBoards lists the workspace's boards acc's user may see (admins see the
+// private ones too): the archived ones, or the rest.
+func (s *Service) ListBoards(ctx context.Context, acc domain.Access, archived bool) ([]domain.BoardSummary, error) {
 	if err := acc.Require(domain.ActionRead); err != nil {
 		return nil, err
 	}
-	return s.boards.ListBoards(ctx, acc.WorkspaceID)
+	return s.boards.ListBoards(ctx, acc.WorkspaceID, acc.UserID, acc.Role == domain.RoleAdmin, archived)
 }
 
 // GetBoardDetail reads the board, its labels, its columns and their tasks
@@ -205,15 +241,165 @@ func (s *Service) GetBoardDetail(ctx context.Context, acc domain.Access, boardID
 	return detail, err
 }
 
-func (s *Service) RenameBoard(ctx context.Context, acc domain.Access, boardID domain.ID, name string) (domain.Board, error) {
+// UpdateBoard renames the board, changes who may open it, or archives or
+// restores it.
+func (s *Service) UpdateBoard(ctx context.Context, acc domain.Access, boardID domain.ID, c domain.BoardChanges) (domain.Board, error) {
 	if err := acc.Require(domain.ActionManageBoards); err != nil {
 		return domain.Board{}, err
 	}
-	name, err := domain.Name(name, domain.MaxBoardNameLen)
+	if c == (domain.BoardChanges{}) {
+		return domain.Board{}, domain.Invalid("name", "Indica qué cambiar: el nombre, la visibilidad o si está archivado")
+	}
+	var name string
+	if c.Name != nil {
+		var err error
+		if name, err = domain.Name(*c.Name, domain.MaxBoardNameLen); err != nil {
+			return domain.Board{}, err
+		}
+	}
+	if c.Visibility != nil && !c.Visibility.Valid() {
+		return domain.Board{}, domain.Invalid("visibility", "La visibilidad debe ser workspace o private")
+	}
+
+	var b domain.Board
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.boards.LockBoard(ctx, boardID); err != nil {
+			return fmt.Errorf("lock board: %w", err)
+		}
+		var err error
+		if b, err = s.boards.GetBoard(ctx, boardID); err != nil {
+			return err
+		}
+		if c.Name != nil {
+			b.Name = name
+		}
+		if c.Visibility != nil {
+			b.Visibility = *c.Visibility
+		}
+		if c.Archived != nil {
+			switch {
+			case *c.Archived && b.ArchivedAt == nil:
+				now := time.Now()
+				b.ArchivedAt = &now
+			case !*c.Archived:
+				b.ArchivedAt = nil
+			}
+		}
+		b, err = s.boards.UpdateBoard(ctx, b)
+		return err
+	})
+	return b, err
+}
+
+// BoardMembers lists who was given a private board; admins see it anyway.
+func (s *Service) BoardMembers(ctx context.Context, acc domain.Access, boardID domain.ID) ([]domain.BoardMember, error) {
+	if err := acc.Require(domain.ActionManageBoards); err != nil {
+		return nil, err
+	}
+	return s.boards.BoardMembers(ctx, boardID)
+}
+
+// SetBoardMembers replaces who was given a private board. Each must be a
+// member of the board's workspace.
+func (s *Service) SetBoardMembers(ctx context.Context, acc domain.Access, boardID domain.ID, userIDs []domain.ID) ([]domain.BoardMember, error) {
+	if err := acc.Require(domain.ActionManageBoards); err != nil {
+		return nil, err
+	}
+	if len(userIDs) > domain.MaxBoardMembers {
+		return nil, domain.Invalid("user_ids", fmt.Sprintf("Como mucho %d personas", domain.MaxBoardMembers))
+	}
+	ids := slices.Clone(userIDs)
+	slices.SortFunc(ids, func(a, b domain.ID) int { return strings.Compare(a.String(), b.String()) })
+	ids = slices.Compact(ids)
+
+	var members []domain.BoardMember
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.boards.LockBoard(ctx, boardID); err != nil {
+			return fmt.Errorf("lock board: %w", err)
+		}
+		rejected, err := s.boards.SetBoardMembers(ctx, boardID, ids)
+		if err != nil {
+			return err
+		}
+		if len(rejected) > 0 {
+			return domain.Invalid("user_ids", "Solo puedes dar el tablero a miembros del workspace")
+		}
+		members, err = s.boards.BoardMembers(ctx, boardID)
+		return err
+	})
+	return members, err
+}
+
+// copySuffix is what the name of a copy ends with.
+const copySuffix = " (copia)"
+
+// DuplicateBoard makes a copy of the board in its workspace, named after it
+// unless a name is given: its columns, labels and the tasks that are not
+// archived and, if it is private, who it was given to. Its activity is not
+// copied, and the copy is not archived.
+func (s *Service) DuplicateBoard(ctx context.Context, acc domain.Access, boardID domain.ID, name string) (domain.Board, error) {
+	if err := acc.Require(domain.ActionManageBoards); err != nil {
+		return domain.Board{}, err
+	}
+	var copied domain.Board
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		// Locked so no column is added or moved while it is copied.
+		if err := s.boards.LockBoard(ctx, boardID); err != nil {
+			return fmt.Errorf("lock board: %w", err)
+		}
+		source, err := s.boards.GetBoard(ctx, boardID)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(name) == "" {
+			name = truncate(source.Name, domain.MaxBoardNameLen-utf8.RuneCountInString(copySuffix)) + copySuffix
+		}
+		if name, err = domain.Name(name, domain.MaxBoardNameLen); err != nil {
+			return err
+		}
+		if copied, err = s.boards.CreateBoard(ctx, source.WorkspaceID, name, source.Visibility, acc.UserID); err != nil {
+			return err
+		}
+		return s.boards.CopyBoard(ctx, source.ID, copied.ID, acc.UserID, source.Visibility == domain.VisibilityPrivate)
+	})
+	return copied, err
+}
+
+// MoveBoard puts the board in target's workspace, where acc's user must be
+// allowed to manage boards too. Whoever is not a member there loses the
+// board: they are taken off its private list and unassigned from its tasks.
+func (s *Service) MoveBoard(ctx context.Context, acc, target domain.Access, boardID domain.ID) (domain.Board, error) {
+	if err := acc.Require(domain.ActionManageBoards); err != nil {
+		return domain.Board{}, err
+	}
+	if err := target.Require(domain.ActionManageBoards); err != nil {
+		return domain.Board{}, err
+	}
+	var moved domain.Board
+	var logged []domain.ActivityEntry
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.boards.LockBoard(ctx, boardID); err != nil {
+			return fmt.Errorf("lock board: %w", err)
+		}
+		var err error
+		moved, logged, err = s.boards.MoveBoard(ctx, boardID, target.WorkspaceID, acc.UserID)
+		return err
+	})
 	if err != nil {
 		return domain.Board{}, err
 	}
-	return s.boards.RenameBoard(ctx, boardID, name)
+	for _, entry := range logged {
+		s.rec.publish(ctx, entry)
+	}
+	return moved, nil
+}
+
+// truncate cuts s to at most n characters.
+func truncate(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 // DeleteBoard deletes the board with its columns, tasks, labels and activity.

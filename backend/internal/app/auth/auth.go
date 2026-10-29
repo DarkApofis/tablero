@@ -63,10 +63,22 @@ type Clock interface {
 	Now() time.Time
 }
 
-// Onboarder sets up what a new account starts with (the default workspace);
-// it runs in the registration's transaction.
+// Onboarder sets up what a new account starts with (the default workspace,
+// the invitations to its email); it runs in the registration's transaction.
 type Onboarder interface {
-	Onboard(ctx context.Context, userID domain.ID) error
+	Onboard(ctx context.Context, user domain.User) error
+}
+
+// Onboarders runs several onboarders in order.
+type Onboarders []Onboarder
+
+func (o Onboarders) Onboard(ctx context.Context, user domain.User) error {
+	for _, step := range o {
+		if err := step.Onboard(ctx, user); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type TxManager interface {
@@ -142,7 +154,7 @@ func (s *Service) Register(ctx context.Context, email, name, password string) (S
 			return Session{}, fmt.Errorf("create user: %w", err)
 		}
 		if s.onboard != nil {
-			if err := s.onboard.Onboard(ctx, user.ID); err != nil {
+			if err := s.onboard.Onboard(ctx, user); err != nil {
 				return Session{}, fmt.Errorf("onboard user: %w", err)
 			}
 		}

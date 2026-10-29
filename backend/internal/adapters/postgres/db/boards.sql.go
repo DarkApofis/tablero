@@ -7,29 +7,128 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
+const addBoardMember = `-- name: AddBoardMember :execrows
+INSERT INTO board_members (board_id, user_id)
+SELECT b.id, m.user_id
+FROM boards b
+JOIN workspace_members m ON m.workspace_id = b.workspace_id AND m.user_id = $1::uuid
+WHERE b.id = $2::uuid
+ON CONFLICT DO NOTHING
+`
+
+type AddBoardMemberParams struct {
+	UserID  uuid.UUID
+	BoardID uuid.UUID
+}
+
+// AddBoardMember only adds members of the board's workspace: for anyone
+// else it affects no row.
+func (q *Queries) AddBoardMember(ctx context.Context, arg AddBoardMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addBoardMember, arg.UserID, arg.BoardID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const copyBoardContent = `-- name: CopyBoardContent :exec
+WITH col_map AS (
+    SELECT id AS old_id, gen_random_uuid() AS new_id
+    FROM columns WHERE board_id = $1::uuid
+), new_cols AS (
+    INSERT INTO columns (id, board_id, name, position)
+    SELECT m.new_id, $2::uuid, c.name, c.position
+    FROM columns c JOIN col_map m ON m.old_id = c.id
+), label_map AS (
+    SELECT id AS old_id, gen_random_uuid() AS new_id
+    FROM labels WHERE board_id = $1::uuid
+), new_labels AS (
+    INSERT INTO labels (id, board_id, name, color)
+    SELECT m.new_id, $2::uuid, l.name, l.color
+    FROM labels l JOIN label_map m ON m.old_id = l.id
+), task_map AS (
+    SELECT t.id AS old_id, gen_random_uuid() AS new_id
+    FROM tasks t JOIN columns c ON c.id = t.column_id
+    WHERE c.board_id = $1::uuid AND t.archived_at IS NULL
+), new_tasks AS (
+    INSERT INTO tasks (id, column_id, title, description, position, priority, due_date, assignee_id, created_by)
+    SELECT tm.new_id, cm.new_id, t.title, t.description, t.position, t.priority, t.due_date, t.assignee_id, $3::uuid
+    FROM tasks t
+    JOIN task_map tm ON tm.old_id = t.id
+    JOIN col_map cm ON cm.old_id = t.column_id
+)
+INSERT INTO task_labels (task_id, label_id)
+SELECT tm.new_id, lm.new_id
+FROM task_labels tl
+JOIN task_map tm ON tm.old_id = tl.task_id
+JOIN label_map lm ON lm.old_id = tl.label_id
+`
+
+type CopyBoardContentParams struct {
+	SourceID uuid.UUID
+	TargetID uuid.UUID
+	ActorID  uuid.UUID
+}
+
+// CopyBoardContent copies a board's columns, labels and the tasks that are
+// not archived (with their labels) into another, empty board. New ids are
+// drawn first so the copies can point at each other; each mapping CTE is
+// evaluated once (it calls a volatile function, so it is materialized).
+func (q *Queries) CopyBoardContent(ctx context.Context, arg CopyBoardContentParams) error {
+	_, err := q.db.Exec(ctx, copyBoardContent, arg.SourceID, arg.TargetID, arg.ActorID)
+	return err
+}
+
+const copyBoardMembers = `-- name: CopyBoardMembers :exec
+INSERT INTO board_members (board_id, user_id)
+SELECT $1::uuid, user_id FROM board_members
+WHERE board_id = $2::uuid
+`
+
+type CopyBoardMembersParams struct {
+	TargetID uuid.UUID
+	SourceID uuid.UUID
+}
+
+func (q *Queries) CopyBoardMembers(ctx context.Context, arg CopyBoardMembersParams) error {
+	_, err := q.db.Exec(ctx, copyBoardMembers, arg.TargetID, arg.SourceID)
+	return err
+}
+
 const createBoard = `-- name: CreateBoard :one
-INSERT INTO boards (workspace_id, name)
-VALUES ($1, $2)
-RETURNING id, workspace_id, name, created_at
+INSERT INTO boards (workspace_id, name, visibility, created_by)
+VALUES ($1, $2, $3, $4)
+RETURNING id, workspace_id, name, created_at, visibility, archived_at, created_by
 `
 
 type CreateBoardParams struct {
 	WorkspaceID uuid.UUID
 	Name        string
+	Visibility  BoardVisibility
+	CreatedBy   uuid.NullUUID
 }
 
 func (q *Queries) CreateBoard(ctx context.Context, arg CreateBoardParams) (Board, error) {
-	row := q.db.QueryRow(ctx, createBoard, arg.WorkspaceID, arg.Name)
+	row := q.db.QueryRow(ctx, createBoard,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Visibility,
+		arg.CreatedBy,
+	)
 	var i Board
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
 		&i.Name,
 		&i.CreatedAt,
+		&i.Visibility,
+		&i.ArchivedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -48,8 +147,37 @@ func (q *Queries) DeleteBoard(ctx context.Context, id uuid.UUID) (int64, error) 
 	return result.RowsAffected(), nil
 }
 
+const deleteBoardMembers = `-- name: DeleteBoardMembers :exec
+DELETE FROM board_members
+WHERE board_id = $1
+`
+
+func (q *Queries) DeleteBoardMembers(ctx context.Context, boardID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteBoardMembers, boardID)
+	return err
+}
+
+const dropBoardNonMembers = `-- name: DropBoardNonMembers :exec
+DELETE FROM board_members bm
+WHERE bm.board_id = $1::uuid
+  AND NOT EXISTS (SELECT 1 FROM workspace_members m
+                  WHERE m.workspace_id = $2::uuid AND m.user_id = bm.user_id)
+`
+
+type DropBoardNonMembersParams struct {
+	BoardID     uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// DropBoardNonMembers takes off a moved private board whoever is not a
+// member of its new workspace.
+func (q *Queries) DropBoardNonMembers(ctx context.Context, arg DropBoardNonMembersParams) error {
+	_, err := q.db.Exec(ctx, dropBoardNonMembers, arg.BoardID, arg.WorkspaceID)
+	return err
+}
+
 const getBoard = `-- name: GetBoard :one
-SELECT id, workspace_id, name, created_at FROM boards
+SELECT id, workspace_id, name, created_at, visibility, archived_at, created_by FROM boards
 WHERE id = $1
 `
 
@@ -61,42 +189,193 @@ func (q *Queries) GetBoard(ctx context.Context, id uuid.UUID) (Board, error) {
 		&i.WorkspaceID,
 		&i.Name,
 		&i.CreatedAt,
+		&i.Visibility,
+		&i.ArchivedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
 
+const getBoardAccess = `-- name: GetBoardAccess :one
+SELECT (b.visibility = 'workspace'
+        OR EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = b.id AND m.user_id = $1::uuid))::boolean AS visible,
+       (b.archived_at IS NOT NULL)::boolean AS archived
+FROM boards b
+WHERE b.id = $2::uuid
+`
+
+type GetBoardAccessParams struct {
+	UserID  uuid.UUID
+	BoardID uuid.UUID
+}
+
+type GetBoardAccessRow struct {
+	Visible  bool
+	Archived bool
+}
+
+// GetBoardAccess tells whether the user may see the board when not an admin
+// of its workspace (it is open to the workspace, or private and they were
+// given it) and whether it is archived. The role is checked apart.
+func (q *Queries) GetBoardAccess(ctx context.Context, arg GetBoardAccessParams) (GetBoardAccessRow, error) {
+	row := q.db.QueryRow(ctx, getBoardAccess, arg.UserID, arg.BoardID)
+	var i GetBoardAccessRow
+	err := row.Scan(&i.Visible, &i.Archived)
+	return i, err
+}
+
 const getBoardWorkspaceID = `-- name: GetBoardWorkspaceID :one
-SELECT workspace_id FROM boards
+SELECT workspace_id, id AS board_id FROM boards
 WHERE id = $1
 `
 
-func (q *Queries) GetBoardWorkspaceID(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, getBoardWorkspaceID, id)
-	var workspace_id uuid.UUID
-	err := row.Scan(&workspace_id)
-	return workspace_id, err
+type GetBoardWorkspaceIDRow struct {
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
 }
 
-const listBoardsByWorkspace = `-- name: ListBoardsByWorkspace :many
-SELECT id, workspace_id, name, created_at FROM boards
-WHERE workspace_id = $1
-ORDER BY created_at, id
+func (q *Queries) GetBoardWorkspaceID(ctx context.Context, id uuid.UUID) (GetBoardWorkspaceIDRow, error) {
+	row := q.db.QueryRow(ctx, getBoardWorkspaceID, id)
+	var i GetBoardWorkspaceIDRow
+	err := row.Scan(&i.WorkspaceID, &i.BoardID)
+	return i, err
+}
+
+const listBoardActors = `-- name: ListBoardActors :many
+SELECT x.board_id, x.user_id, x.name
+FROM (
+    SELECT a.board_id, a.actor_id AS user_id, u.name, max(a.id) AS last_id,
+           row_number() OVER (PARTITION BY a.board_id ORDER BY max(a.id) DESC) AS rank
+    FROM activity_log a
+    JOIN users u ON u.id = a.actor_id
+    WHERE a.board_id = ANY ($1::uuid[])
+    GROUP BY a.board_id, a.actor_id, u.name
+) x
+WHERE x.rank <= 4
+ORDER BY x.board_id, x.last_id DESC
 `
 
-func (q *Queries) ListBoardsByWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Board, error) {
-	rows, err := q.db.Query(ctx, listBoardsByWorkspace, workspaceID)
+type ListBoardActorsRow struct {
+	BoardID uuid.UUID
+	UserID  uuid.NullUUID
+	Name    string
+}
+
+// ListBoardActors returns, per board, up to four people who changed it,
+// the most recent first.
+func (q *Queries) ListBoardActors(ctx context.Context, boardIds []uuid.UUID) ([]ListBoardActorsRow, error) {
+	rows, err := q.db.Query(ctx, listBoardActors, boardIds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Board
+	var items []ListBoardActorsRow
 	for rows.Next() {
-		var i Board
+		var i ListBoardActorsRow
+		if err := rows.Scan(&i.BoardID, &i.UserID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBoardMembers = `-- name: ListBoardMembers :many
+SELECT m.user_id, u.name, u.email
+FROM board_members m
+JOIN users u ON u.id = m.user_id
+WHERE m.board_id = $1
+ORDER BY u.name, u.email
+`
+
+type ListBoardMembersRow struct {
+	UserID uuid.UUID
+	Name   string
+	Email  string
+}
+
+func (q *Queries) ListBoardMembers(ctx context.Context, boardID uuid.UUID) ([]ListBoardMembersRow, error) {
+	rows, err := q.db.Query(ctx, listBoardMembers, boardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBoardMembersRow
+	for rows.Next() {
+		var i ListBoardMembersRow
+		if err := rows.Scan(&i.UserID, &i.Name, &i.Email); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBoardSummaries = `-- name: ListBoardSummaries :many
+SELECT b.id, b.workspace_id, b.name, b.created_at, b.visibility, b.archived_at, b.created_by,
+       (SELECT count(*) FROM tasks t
+        JOIN columns c ON c.id = t.column_id
+        WHERE c.board_id = b.id AND t.archived_at IS NULL) AS task_count,
+       COALESCE((SELECT a.created_at FROM activity_log a
+                 WHERE a.board_id = b.id
+                 ORDER BY a.id DESC
+                 LIMIT 1), b.created_at)::timestamptz AS updated_at
+FROM boards b
+WHERE b.workspace_id = $1::uuid
+  AND (b.archived_at IS NOT NULL) = $2::boolean
+  AND ($3::boolean
+       OR b.visibility = 'workspace'
+       OR EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = b.id AND m.user_id = $4::uuid))
+ORDER BY b.created_at, b.id
+`
+
+type ListBoardSummariesParams struct {
+	WorkspaceID uuid.UUID
+	Archived    bool
+	SeeAll      bool
+	UserID      uuid.UUID
+}
+
+type ListBoardSummariesRow struct {
+	Board     Board
+	TaskCount int64
+	UpdatedAt time.Time
+}
+
+// ListBoardSummaries lists the boards of a workspace the user may see (with
+// see_all, every one; otherwise those open to the workspace and the private
+// ones they were given), archived or not, with their task count and when
+// they last changed.
+func (q *Queries) ListBoardSummaries(ctx context.Context, arg ListBoardSummariesParams) ([]ListBoardSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listBoardSummaries,
+		arg.WorkspaceID,
+		arg.Archived,
+		arg.SeeAll,
+		arg.UserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBoardSummariesRow
+	for rows.Next() {
+		var i ListBoardSummariesRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.Name,
-			&i.CreatedAt,
+			&i.Board.ID,
+			&i.Board.WorkspaceID,
+			&i.Board.Name,
+			&i.Board.CreatedAt,
+			&i.Board.Visibility,
+			&i.Board.ArchivedAt,
+			&i.Board.CreatedBy,
+			&i.TaskCount,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -124,26 +403,186 @@ func (q *Queries) LockBoard(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-const updateBoardName = `-- name: UpdateBoardName :one
-UPDATE boards
-SET name = $2
-WHERE id = $1
-RETURNING id, workspace_id, name, created_at
+const lockBoardNonMemberTasks = `-- name: LockBoardNonMemberTasks :many
+SELECT t.id
+FROM tasks t
+JOIN columns c ON c.id = t.column_id
+WHERE c.board_id = $1::uuid
+  AND t.assignee_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM workspace_members m
+                  WHERE m.workspace_id = $2::uuid AND m.user_id = t.assignee_id)
+FOR UPDATE OF t
 `
 
-type UpdateBoardNameParams struct {
-	ID   uuid.UUID
-	Name string
+type LockBoardNonMemberTasksParams struct {
+	BoardID     uuid.UUID
+	WorkspaceID uuid.UUID
 }
 
-func (q *Queries) UpdateBoardName(ctx context.Context, arg UpdateBoardNameParams) (Board, error) {
-	row := q.db.QueryRow(ctx, updateBoardName, arg.ID, arg.Name)
+// LockBoardNonMemberTasks locks the tasks of a moved board assigned to
+// someone who is not a member of its new workspace, for
+// UnassignBoardNonMembers. Take it before LockBoardActivity.
+func (q *Queries) LockBoardNonMemberTasks(ctx context.Context, arg LockBoardNonMemberTasksParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockBoardNonMemberTasks, arg.BoardID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const moveBoard = `-- name: MoveBoard :one
+UPDATE boards
+SET workspace_id = $1::uuid
+WHERE id = $2::uuid
+RETURNING id, workspace_id, name, created_at, visibility, archived_at, created_by
+`
+
+type MoveBoardParams struct {
+	WorkspaceID uuid.UUID
+	ID          uuid.UUID
+}
+
+// MoveBoard puts the board in another workspace; MoveBoardActivity takes
+// its log along.
+func (q *Queries) MoveBoard(ctx context.Context, arg MoveBoardParams) (Board, error) {
+	row := q.db.QueryRow(ctx, moveBoard, arg.WorkspaceID, arg.ID)
 	var i Board
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
 		&i.Name,
 		&i.CreatedAt,
+		&i.Visibility,
+		&i.ArchivedAt,
+		&i.CreatedBy,
+	)
+	return i, err
+}
+
+const moveBoardActivity = `-- name: MoveBoardActivity :exec
+UPDATE activity_log
+SET workspace_id = $1::uuid
+WHERE board_id = $2::uuid
+`
+
+type MoveBoardActivityParams struct {
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
+}
+
+func (q *Queries) MoveBoardActivity(ctx context.Context, arg MoveBoardActivityParams) error {
+	_, err := q.db.Exec(ctx, moveBoardActivity, arg.WorkspaceID, arg.BoardID)
+	return err
+}
+
+const unassignBoardNonMembers = `-- name: UnassignBoardNonMembers :many
+WITH targets AS (
+    SELECT t.id, t.assignee_id
+    FROM tasks t
+    JOIN columns c ON c.id = t.column_id
+    WHERE c.board_id = $2::uuid
+      AND t.assignee_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM workspace_members m
+                      WHERE m.workspace_id = $1::uuid AND m.user_id = t.assignee_id)
+), unassigned AS (
+    UPDATE tasks t
+    SET assignee_id = NULL,
+        version     = t.version + 1
+    FROM targets x
+    WHERE t.id = x.id
+    RETURNING t.id, t.title, t.version, x.assignee_id AS old_assignee
+)
+INSERT INTO activity_log (workspace_id, board_id, actor_id, type, payload)
+SELECT $1::uuid, $2::uuid, $3::uuid, 'task_updated',
+       jsonb_build_object(
+           'task_id', u.id,
+           'title', u.title,
+           'version', u.version,
+           'changes', jsonb_build_object(
+               'assignee_id', jsonb_build_object('from', u.old_assignee, 'to', NULL))
+       )
+FROM unassigned u
+RETURNING id, workspace_id, board_id, actor_id, type, payload, created_at
+`
+
+type UnassignBoardNonMembersParams struct {
+	WorkspaceID uuid.UUID
+	BoardID     uuid.UUID
+	ActorID     uuid.UUID
+}
+
+// UnassignBoardNonMembers unassigns them, bumping each version as any edit
+// does, and logs one task_updated entry per task, like UnassignMemberTasks.
+func (q *Queries) UnassignBoardNonMembers(ctx context.Context, arg UnassignBoardNonMembersParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, unassignBoardNonMembers, arg.WorkspaceID, arg.BoardID, arg.ActorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActivityLog
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.BoardID,
+			&i.ActorID,
+			&i.Type,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateBoard = `-- name: UpdateBoard :one
+UPDATE boards
+SET name = $1, visibility = $2, archived_at = $3
+WHERE id = $4
+RETURNING id, workspace_id, name, created_at, visibility, archived_at, created_by
+`
+
+type UpdateBoardParams struct {
+	Name       string
+	Visibility BoardVisibility
+	ArchivedAt *time.Time
+	ID         uuid.UUID
+}
+
+func (q *Queries) UpdateBoard(ctx context.Context, arg UpdateBoardParams) (Board, error) {
+	row := q.db.QueryRow(ctx, updateBoard,
+		arg.Name,
+		arg.Visibility,
+		arg.ArchivedAt,
+		arg.ID,
+	)
+	var i Board
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.Visibility,
+		&i.ArchivedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }

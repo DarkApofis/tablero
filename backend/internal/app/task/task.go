@@ -16,8 +16,8 @@ import (
 // Ports.
 
 type TaskRepository interface {
-	// WorkspaceOfTask returns domain.ErrNotMember when the task does not exist.
-	WorkspaceOfTask(ctx context.Context, taskID domain.ID) (domain.ID, error)
+	// LocationOfTask returns domain.ErrNotMember when the task does not exist.
+	LocationOfTask(ctx context.Context, taskID domain.ID) (domain.Location, error)
 	// Get, GetForUpdate and Detail return domain.ErrTaskNotFound.
 	Get(ctx context.Context, taskID domain.ID) (domain.Task, error)
 	// GetForUpdate also locks the task until the transaction ends.
@@ -103,9 +103,9 @@ func NewService(tasks TaskRepository, boards BoardRepository, workspaces Workspa
 	return &Service{tasks: tasks, boards: boards, workspaces: workspaces, activity: activity, tx: tx, events: events, clock: clock}
 }
 
-// WorkspaceOfTask resolves a task to its workspace for authorization.
-func (s *Service) WorkspaceOfTask(ctx context.Context, taskID domain.ID) (domain.ID, error) {
-	return s.tasks.WorkspaceOfTask(ctx, taskID)
+// LocationOfTask resolves a task to its board and workspace for authorization.
+func (s *Service) LocationOfTask(ctx context.Context, taskID domain.ID) (domain.Location, error) {
+	return s.tasks.LocationOfTask(ctx, taskID)
 }
 
 // Get reads the task, its assignee and its labels from one snapshot.

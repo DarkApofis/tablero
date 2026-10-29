@@ -25,7 +25,7 @@ JOIN boards b ON b.id = c.board_id
 WHERE c.id = $1;
 
 -- name: GetColumnWorkspaceID :one
-SELECT b.workspace_id
+SELECT b.workspace_id, b.id AS board_id
 FROM columns c
 JOIN boards b ON b.id = c.board_id
 WHERE c.id = $1;

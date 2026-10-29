@@ -53,8 +53,8 @@ func TestTasksVersionGuard(t *testing.T) {
 	if _, err := tasks.Get(ctx, created.ID); !errors.Is(err, domain.ErrTaskNotFound) {
 		t.Errorf("Get(deleted) = %v", err)
 	}
-	if _, err := tasks.WorkspaceOfTask(ctx, created.ID); !errors.Is(err, domain.ErrNotMember) {
-		t.Errorf("WorkspaceOfTask(deleted) = %v", err)
+	if _, err := tasks.LocationOfTask(ctx, created.ID); !errors.Is(err, domain.ErrNotMember) {
+		t.Errorf("LocationOfTask(deleted) = %v", err)
 	}
 }
 
@@ -115,7 +115,7 @@ func TestTaskLabelsAndDetail(t *testing.T) {
 	ctx := f.ctx
 	bug, _ := f.labels.CreateLabel(ctx, f.board.ID, "Bug", "#ff0000")
 	api, _ := f.labels.CreateLabel(ctx, f.board.ID, "API", "#00ff00")
-	other, _ := f.boards.CreateBoard(ctx, f.ws, "Otro")
+	other, _ := f.boards.CreateBoard(ctx, f.ws, "Otro", domain.VisibilityWorkspace, f.user.ID)
 	foreign, _ := f.labels.CreateLabel(ctx, other.ID, "Ajena", "#0000ff")
 	created, _ := tasks.Create(ctx, f.columns[0].ID, 1, domain.TaskFields{Title: "T", Priority: domain.PriorityLow, AssigneeID: &f.user.ID}, f.user.ID)
 

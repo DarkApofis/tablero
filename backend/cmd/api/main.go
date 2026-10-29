@@ -138,9 +138,12 @@ func run() error {
 		slog.Info("demo mode on", "reset_every", cfg.DemoResetInterval.String(), "guest_ttl", cfg.DemoGuestTTL.String())
 	}
 
-	// New accounts join the default workspace as members. Guests of the demo
-	// (above) register through authService itself, without it.
-	httpAuth := authService
+	// New accounts accept the invitations to their email and join the
+	// default workspace as members. Guests of the demo (above) register
+	// through authService itself, without it.
+	invitations := workspace.NewInvitations(postgres.NewInvitations(workspaces), users, tx, systemClock{})
+	onboarding := auth.Onboarders{invitations}
+	workspaceService := workspace.NewService(workspaces, tx, publisher)
 	if cfg.DefaultWorkspaceID != "" {
 		wsID, _ := domain.ParseID(cfg.DefaultWorkspaceID) // validated by config.Load
 		exists, err := workspaces.Exists(ctx, wsID)
@@ -150,9 +153,11 @@ func run() error {
 		if !exists {
 			return fmt.Errorf("DEFAULT_WORKSPACE_ID %s: no such workspace, not starting", wsID)
 		}
-		httpAuth = authService.WithOnboarding(tx, workspace.NewDefaultMembership(workspaces, wsID))
+		onboarding = append(onboarding, workspace.NewDefaultMembership(workspaces, wsID))
+		workspaceService = workspaceService.WithDefault(wsID)
 		slog.Info("new accounts join the default workspace as members", "workspace", wsID.String())
 	}
+	httpAuth := authService.WithOnboarding(tx, onboarding)
 
 	var authLimits *httpapi.AuthLimits
 	if cfg.RateLimit {
@@ -174,8 +179,9 @@ func run() error {
 			Ready:        pool,
 			ShuttingDown: &shuttingDown,
 			Auth:         httpAuth,
-			Authorizer:   workspace.NewAuthorizer(workspaces),
-			Workspaces:   workspace.NewService(workspaces, tx, publisher),
+			Authorizer:   workspace.NewAuthorizer(workspaces).WithBoards(boards),
+			Workspaces:   workspaceService,
+			Invitations:  invitations,
 			Boards:       board.NewService(boards, labels, activity, tx, publisher),
 			Tasks:        task.NewService(postgres.NewTasks(pool), boards, workspaces, activity, tx, publisher, systemClock{}),
 			Labels:       board.NewLabelService(labels, activity, tx, publisher),

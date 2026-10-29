@@ -18,9 +18,9 @@ type Tasks struct{ conn }
 
 func NewTasks(pool *pgxpool.Pool) *Tasks { return &Tasks{conn{pool}} }
 
-func (r *Tasks) WorkspaceOfTask(ctx context.Context, taskID domain.ID) (domain.ID, error) {
-	id, err := r.q(ctx).GetTaskWorkspaceID(ctx, uuid.UUID(taskID))
-	return domain.ID(id), notFound(err, domain.ErrNotMember)
+func (r *Tasks) LocationOfTask(ctx context.Context, taskID domain.ID) (domain.Location, error) {
+	row, err := r.q(ctx).GetTaskWorkspaceID(ctx, uuid.UUID(taskID))
+	return domain.Location{WorkspaceID: domain.ID(row.WorkspaceID), BoardID: domain.ID(row.BoardID)}, notFound(err, domain.ErrNotMember)
 }
 
 func (r *Tasks) Get(ctx context.Context, taskID domain.ID) (domain.Task, error) {

@@ -17,8 +17,51 @@ type Board struct {
 	ID          ID
 	WorkspaceID ID
 	Name        string
-	CreatedAt   time.Time
+	Visibility  Visibility
+	// ArchivedAt: an archived board is left out of the workspace's list and
+	// cannot be changed until it is restored.
+	ArchivedAt *time.Time
+	CreatedBy  *ID
+	CreatedAt  time.Time
 }
+
+// Visibility is who in its workspace may open a board.
+type Visibility string
+
+const (
+	// VisibilityWorkspace: every member, as their role allows.
+	VisibilityWorkspace Visibility = "workspace"
+	// VisibilityPrivate: the workspace's admins and the members given it.
+	VisibilityPrivate Visibility = "private"
+)
+
+func (v Visibility) Valid() bool { return v == VisibilityWorkspace || v == VisibilityPrivate }
+
+// BoardSummary is a board in its workspace's list.
+type BoardSummary struct {
+	Board
+	TaskCount int64 // not archived
+	UpdatedAt time.Time
+	// Actors: up to four people who changed it, the most recent first.
+	Actors []PresenceUser
+}
+
+// BoardChanges are the board settings to change; nil fields stay as they are.
+type BoardChanges struct {
+	Name       *string
+	Visibility *Visibility
+	Archived   *bool
+}
+
+// BoardMember is someone given a private board.
+type BoardMember struct {
+	UserID ID
+	Name   string
+	Email  string
+}
+
+// MaxBoardMembers caps who a private board can be given to at once.
+const MaxBoardMembers = 200
 
 type Column struct {
 	ID        ID

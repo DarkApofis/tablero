@@ -229,10 +229,9 @@ cd frontend && pnpm exec playwright install chromium && pnpm test:e2e
 
 Usan el frontend que ya responde en el puerto 3000 (el contenedor `web`); si no hay
 ninguno, Playwright construye y sirve el del código. Crean usuarios y un workspace
-«E2E …» en la base. Con otros puertos:
+«E2E …» a través de la API (con invitaciones). Con otros puertos:
 `API_PORT=8090 WEB_PORT=3100 CORS_ORIGINS=http://localhost:3100 docker compose up -d --build --wait`
-y `E2E_API_URL=http://localhost:8090 E2E_PORT=3100 pnpm test:e2e` (más
-`E2E_DATABASE_URL` si cambias `DB_PORT`).
+y `E2E_API_URL=http://localhost:8090 E2E_PORT=3100 pnpm test:e2e`.
 
 Lint: `golangci-lint run ./...` en `backend/` (incluye `depguard`, que impide que
 `domain` o `app` importen adaptadores) y `pnpm lint` en `frontend/`.

@@ -10,6 +10,13 @@ export const roles: { value: Role; label: string; description: string }[] = [
 
 export const roleLabel = (role: Role) => roles.find((r) => r.value === role)?.label ?? role;
 
+/** The roles to invite with, the usual one first (as in the design). */
+export const INVITE_ROLES: { value: Role; label: string }[] = [
+  { value: "member", label: "Miembro" },
+  { value: "viewer", label: "Solo lectura" },
+  { value: "admin", label: "Admin" },
+];
+
 // Mirrors the API's permission table, only to decide what to show. The API
 // authorizes every request on its own.
 export const canManageMembers = (role: Role | undefined) => role === "admin";

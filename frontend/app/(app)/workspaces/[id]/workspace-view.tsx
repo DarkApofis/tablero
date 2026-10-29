@@ -1,137 +1,131 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { CreateForm } from "@/components/ui/create-form";
 import { Notice } from "@/components/ui/notice";
 import { ApiError } from "@/lib/api";
-import { canManageBoards, roleLabel } from "@/lib/roles";
-import { DEFAULT_COLUMNS, useBoards, useCreateBoard, useWorkspaces } from "@/lib/workspaces";
+import { useUpdateBoard } from "@/lib/board-admin";
+import { useBoards } from "@/lib/workspaces";
+import { BoardCard, type Announce } from "./board-card";
+import { useWorkspaceShell } from "./workspace-shell";
 
-const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
-const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text";
-const created = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", year: "numeric" });
+export const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
 
+/** The boards tab: a card per board and, for admins, a tile to create one. */
 export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   const boards = useBoards(workspaceId);
-  const workspace = useWorkspaces().data?.find((w) => w.id === workspaceId);
-  const createBoard = useCreateBoard(workspaceId);
-  const router = useRouter();
-  const [creating, setCreating] = useState(false);
-  const isAdmin = canManageBoards(workspace?.role);
+  const { isAdmin, openNewBoard } = useWorkspaceShell();
+  const [message, setMessage] = useState<Parameters<Announce>[0] | null>(null);
 
-  if (boards.isPending) return <WorkspaceSkeleton />;
-
+  if (boards.isPending) return <BoardsSkeleton />;
   if (boards.error) {
-    const forbidden = boards.error instanceof ApiError && boards.error.status === 403;
     return (
       <Notice
         tone="error"
-        title={forbidden ? "No tienes acceso a este workspace" : "No pudimos cargar los tableros"}
+        title="No pudimos cargar los tableros"
         actions={
-          forbidden ? undefined : (
-            <Button size="sm" variant="primary" loading={boards.isRefetching} onClick={() => boards.refetch()}>
-              Reintentar
-            </Button>
-          )
+          <Button size="sm" variant="primary" loading={boards.isRefetching} onClick={() => boards.refetch()}>
+            Reintentar
+          </Button>
         }
       >
-        {forbidden
-          ? "Puede que te hayan quitado de él o que ya no exista."
-          : boards.error instanceof ApiError && boards.error.code === "network_error"
-            ? boards.error.message
-            : "Algo salió mal. Inténtalo de nuevo en un momento."}
+        {boards.error instanceof ApiError && boards.error.code === "network_error"
+          ? boards.error.message
+          : "Algo salió mal. Inténtalo de nuevo en un momento."}
       </Notice>
     );
   }
 
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="break-words text-[28px] font-semibold tracking-[-.02em]">{workspace?.name ?? "Tableros"}</h1>
-          <p className="mt-1.5 text-sm text-muted">
-            {workspace && `${roleLabel(workspace.role)} · `}
-            {boards.data.length === 1 ? "1 tablero" : `${boards.data.length} tableros`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Link
-            href={`/workspaces/${workspaceId}/members`}
-            className={`inline-flex h-[30px] items-center rounded-[10px] border border-border-strong bg-raised px-3 text-[12.5px] font-semibold ${focusRing}`}
-          >
-            Miembros{workspace && ` · ${workspace.member_count}`}
-          </Link>
-          {isAdmin && !creating && (
-            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-              Nuevo tablero
-            </Button>
-          )}
-        </div>
+      <div aria-live="polite">
+        {message && (
+          <Notice
+            tone={message.tone ?? "success"}
+            title={message.text}
+            compact
+            actions={
+              <>
+                {message.restore && <RestoreButton board={message.restore} announce={setMessage} />}
+                <Button size="sm" variant="ghost" onClick={() => setMessage(null)}>
+                  Cerrar
+                </Button>
+              </>
+            }
+          />
+        )}
       </div>
 
-      {isAdmin && creating && (
-        <div className="flex flex-col gap-1.5 rounded-2xl border border-border bg-surface p-5">
-          <CreateForm
-            label="Nombre del tablero"
-            submitLabel="Crear tablero"
-            autoFocus
-            onCancel={() => setCreating(false)}
-            onCreate={async (name) => {
-              const board = await createBoard.mutateAsync(name);
-              router.push(`/boards/${board.id}`);
-            }}
-          />
-          <p className="text-[12.5px] text-muted">
-            Empieza con las columnas {DEFAULT_COLUMNS.map((c) => `«${c}»`).join(", ")}. Podrás añadir más desde el tablero.
-          </p>
-        </div>
-      )}
-
-      {boards.data.length === 0 ? (
+      {boards.data.length === 0 && !isAdmin ? (
         <div className="flex min-h-[180px] flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-8 text-center">
           <p className="font-medium">Este workspace todavía no tiene tableros</p>
-          <p className="text-[13.5px] text-muted">
-            {isAdmin ? "Crea el primero con «Nuevo tablero»." : "Cuando un admin cree uno, aparecerá aquí."}
-          </p>
+          <p className="text-[13.5px] text-muted">Cuando un admin cree uno, aparecerá aquí.</p>
         </div>
       ) : (
         <ul className={grid}>
           {boards.data.map((b) => (
             <li key={b.id}>
-              <Link
-                href={`/boards/${b.id}`}
-                className={`flex h-full flex-col gap-2 rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-border-strong ${focusRing}`}
-              >
-                <h2 className="break-words text-[17px] font-semibold tracking-[-.01em]">{b.name}</h2>
-                <p className="text-[13px] text-faint">Creado el {created.format(new Date(b.created_at))}</p>
-              </Link>
+              <BoardCard board={b} announce={setMessage} />
             </li>
           ))}
+          {isAdmin && (
+            <li>
+              <button
+                type="button"
+                onClick={openNewBoard}
+                className="flex h-full min-h-[130px] w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-[1.5px] border-dashed border-border-strong p-[18px] text-sm text-muted transition-colors hover:border-accent-text hover:text-accent-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-text"
+              >
+                <span aria-hidden className="text-[22px] leading-none text-accent-text">
+                  +
+                </span>
+                {boards.data.length === 0 ? "Crea el primer tablero" : "Nuevo tablero"}
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </>
   );
 }
 
-export function WorkspaceSkeleton() {
+/** Undoes archiving a board. */
+export function RestoreButton({ board, announce, label = "Deshacer" }: { board: { id: string; name: string }; announce: Announce; label?: string }) {
+  const update = useUpdateBoard(board.id);
   return (
-    <div className="flex flex-col gap-6" role="status" aria-busy="true">
+    <Button
+      size="sm"
+      aria-label={`${label}: ${board.name}`}
+      loading={update.isPending}
+      onClick={() =>
+        update.mutate(
+          { archived: false },
+          {
+            onSuccess: () => announce({ text: `«${board.name}» se restauró.` }),
+            onError: () => announce({ tone: "error", text: `No se pudo restaurar «${board.name}».` }),
+          },
+        )
+      }
+    >
+      {label}
+    </Button>
+  );
+}
+
+export function BoardsSkeleton() {
+  return (
+    <div className={grid} role="status" aria-busy="true">
       <span className="sr-only">Cargando tableros…</span>
-      <div className="flex flex-col gap-2">
-        <div className="h-8 w-56 animate-pulse rounded bg-border" />
-        <div className="h-4 w-32 animate-pulse rounded bg-border" />
-      </div>
-      <div className={grid}>
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="flex h-[92px] flex-col gap-3 rounded-2xl border border-border bg-surface p-5">
-            <div className="h-5 w-1/2 animate-pulse rounded bg-border" />
-            <div className="h-3.5 w-1/3 animate-pulse rounded bg-border" />
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="flex h-[130px] flex-col gap-3.5 rounded-2xl border border-border bg-surface p-[18px]">
+          <div className="h-5 w-1/2 animate-pulse rounded bg-border" />
+          <div className="h-3.5 w-2/3 animate-pulse rounded bg-border" />
+          <div className="mt-auto flex gap-1">
+            {[0, 1, 2].map((j) => (
+              <div key={j} className="size-[26px] animate-pulse rounded-full bg-border" />
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 }

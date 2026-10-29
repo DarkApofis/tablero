@@ -20,7 +20,7 @@ WHERE id = $1
 FOR UPDATE;
 
 -- name: GetTaskWorkspaceID :one
-SELECT b.workspace_id
+SELECT b.workspace_id, b.id AS board_id
 FROM tasks t
 JOIN columns c ON c.id = t.column_id
 JOIN boards b ON b.id = c.board_id

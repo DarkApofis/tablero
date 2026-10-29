@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { cx } from "@/components/ui/cx";
 
 const tabs = [
@@ -11,6 +11,7 @@ const tabs = [
 
 export function AuthTabs() {
   const pathname = usePathname();
+  const router = useRouter();
   return (
     <nav
       aria-label="Acceso"
@@ -23,6 +24,13 @@ export function AuthTabs() {
             key={tab.href}
             href={tab.href}
             replace
+            // Keep ?next=…: whoever came from an invitation link goes back to it
+            // after signing up as well as after signing in.
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              router.replace(tab.href + window.location.search);
+            }}
             aria-current={current ? "page" : undefined}
             className={cx(
               "rounded-lg p-2 text-center text-[13.5px]",

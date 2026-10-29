@@ -32,11 +32,72 @@ func newRepo() *memRepo {
 	return &memRepo{workspaces: map[domain.ID]domain.Workspace{}, tasksOf: map[domain.ID]int{}}
 }
 
-func (r *memRepo) Create(_ context.Context, name string, createdBy domain.ID) (domain.Workspace, error) {
-	ws := domain.Workspace{ID: domain.NewID(), Name: name, CreatedAt: time.Now()}
+func (r *memRepo) Create(ctx context.Context, name, slug string, createdBy domain.ID) (domain.Workspace, error) {
+	if taken, _ := r.SlugTaken(ctx, slug); taken {
+		return domain.Workspace{}, domain.ErrSlugTaken
+	}
+	ws := domain.Workspace{ID: domain.NewID(), Name: name, Slug: slug, DefaultRole: domain.RoleMember, OwnerID: &createdBy, CreatedAt: time.Now()}
 	r.workspaces[ws.ID] = ws
 	r.creators = append(r.creators, createdBy)
 	return ws, nil
+}
+
+func (r *memRepo) Get(_ context.Context, id domain.ID) (domain.Workspace, error) {
+	ws, ok := r.workspaces[id]
+	if !ok {
+		return domain.Workspace{}, domain.ErrNotMember
+	}
+	return ws, nil
+}
+
+func (r *memRepo) Stats(_ context.Context, id domain.ID) (members, boards, tasks int64, err error) {
+	for _, m := range r.members {
+		if m.ws == id {
+			members++
+		}
+	}
+	return members, 0, 0, nil
+}
+
+func (r *memRepo) SlugTaken(_ context.Context, slug string) (bool, error) {
+	for _, ws := range r.workspaces {
+		if slug != "" && ws.Slug == slug {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *memRepo) IDBySlug(_ context.Context, slug string) (domain.ID, error) {
+	for _, ws := range r.workspaces {
+		if ws.Slug == slug {
+			return ws.ID, nil
+		}
+	}
+	return domain.NilID, domain.ErrNotMember
+}
+
+func (r *memRepo) Update(_ context.Context, ws domain.Workspace) (domain.Workspace, error) {
+	for _, other := range r.workspaces {
+		if other.ID != ws.ID && ws.Slug != "" && other.Slug == ws.Slug {
+			return domain.Workspace{}, domain.ErrSlugTaken
+		}
+	}
+	r.workspaces[ws.ID] = ws
+	return ws, nil
+}
+
+func (r *memRepo) SetOwner(_ context.Context, id, owner domain.ID) error {
+	ws := r.workspaces[id]
+	ws.OwnerID = &owner
+	r.workspaces[id] = ws
+	return nil
+}
+
+func (r *memRepo) Delete(_ context.Context, id domain.ID) error {
+	delete(r.workspaces, id)
+	r.members = slices.DeleteFunc(r.members, func(m member) bool { return m.ws == id })
+	return nil
 }
 
 func (r *memRepo) CountCreatedBy(_ context.Context, user domain.ID) (int64, error) {
@@ -163,7 +224,7 @@ func newEnv(t *testing.T) *env {
 	e := &env{repo: newRepo(), tx: &fakeTx{}, events: &recorder{}, users: map[domain.Role]domain.ID{}}
 	e.svc = workspace.NewService(e.repo, e.tx, e.events)
 	e.authz = workspace.NewAuthorizer(e.repo)
-	ws, _ := e.repo.Create(context.Background(), "Equipo", domain.NewID())
+	ws, _ := e.repo.Create(context.Background(), "Equipo", "equipo", domain.NewID())
 	e.ws = ws.ID
 	for _, role := range []domain.Role{domain.RoleAdmin, domain.RoleMember, domain.RoleViewer} {
 		e.users[role] = domain.NewID()
@@ -259,14 +320,17 @@ func TestMembershipChangesRecheckTheActorUnderTheLock(t *testing.T) {
 func TestCreateMakesCreatorAdmin(t *testing.T) {
 	e := newEnv(t)
 	creator := domain.NewID()
-	ws, err := e.svc.Create(context.Background(), creator, "  Producto ")
+	ws, err := e.svc.Create(context.Background(), creator, "  Producto ", "")
 	if err != nil || ws.Name != "Producto" || ws.Role != domain.RoleAdmin || ws.MemberCount != 1 {
 		t.Fatalf("Create = %+v, %v", ws, err)
+	}
+	if ws.Slug != "producto" || !ws.IsOwner(creator) {
+		t.Errorf("slug = %q, owner = %v; want producto, the creator", ws.Slug, ws.OwnerID)
 	}
 	if role, _ := e.repo.Role(context.Background(), ws.ID, creator); role != domain.RoleAdmin || e.tx.committed != 1 {
 		t.Errorf("creator role = %q, commits = %d", role, e.tx.committed)
 	}
-	if _, err := e.svc.Create(context.Background(), creator, " "); !errors.As(err, new(*domain.ValidationError)) {
+	if _, err := e.svc.Create(context.Background(), creator, " ", ""); !errors.As(err, new(*domain.ValidationError)) {
 		t.Errorf("empty name: err = %v", err)
 	}
 }
@@ -345,11 +409,11 @@ func TestCreateIsLimitedPerCreator(t *testing.T) {
 	ana, beto := domain.NewID(), domain.NewID()
 
 	for i := range domain.MaxCreatedWorkspaces {
-		if _, err := e.svc.Create(ctx, ana, "Propio"); err != nil {
+		if _, err := e.svc.Create(ctx, ana, "Propio", ""); err != nil {
 			t.Fatalf("workspace %d: %v", i+1, err)
 		}
 	}
-	if _, err := e.svc.Create(ctx, ana, "Uno más"); !errors.Is(err, domain.ErrWorkspaceLimit) {
+	if _, err := e.svc.Create(ctx, ana, "Uno más", ""); !errors.Is(err, domain.ErrWorkspaceLimit) {
 		t.Fatalf("over the limit: %v, want ErrWorkspaceLimit", err)
 	}
 	if n, _ := e.svc.CreatedCount(ctx, ana); n != int64(domain.MaxCreatedWorkspaces) {
@@ -358,7 +422,7 @@ func TestCreateIsLimitedPerCreator(t *testing.T) {
 	// Someone else's limit is their own, and belonging to ana's workspaces
 	// (being added, or by default) does not count.
 	_ = e.repo.AddMember(ctx, e.ws, beto, domain.RoleAdmin)
-	if _, err := e.svc.Create(ctx, beto, "De Beto"); err != nil {
+	if _, err := e.svc.Create(ctx, beto, "De Beto", ""); err != nil {
 		t.Errorf("beto's first workspace: %v", err)
 	}
 }

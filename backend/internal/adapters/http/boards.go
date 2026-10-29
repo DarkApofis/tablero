@@ -11,18 +11,50 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/DarkApofis/tablero/backend/internal/app/board"
+	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 type boardResponse struct {
-	ID          uuid.UUID `json:"id"`
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	Name        string    `json:"name"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          uuid.UUID         `json:"id"`
+	WorkspaceID uuid.UUID         `json:"workspace_id"`
+	Name        string            `json:"name"`
+	Visibility  domain.Visibility `json:"visibility"`
+	ArchivedAt  *time.Time        `json:"archived_at"`
+	CreatedBy   uuid.NullUUID     `json:"created_by"`
+	CreatedAt   time.Time         `json:"created_at"`
 }
 
 func newBoardResponse(b domain.Board) boardResponse {
-	return boardResponse{ID: uuid.UUID(b.ID), WorkspaceID: uuid.UUID(b.WorkspaceID), Name: b.Name, CreatedAt: b.CreatedAt}
+	return boardResponse{
+		ID: uuid.UUID(b.ID), WorkspaceID: uuid.UUID(b.WorkspaceID), Name: b.Name, Visibility: b.Visibility,
+		ArchivedAt: b.ArchivedAt, CreatedBy: nullUUID(b.CreatedBy), CreatedAt: b.CreatedAt,
+	}
+}
+
+type boardSummaryResponse struct {
+	boardResponse
+	TaskCount int64     `json:"task_count"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// Actors: up to four people who changed it, the most recent first.
+	Actors []userRef `json:"actors"`
+}
+
+func newBoardSummaryResponse(b domain.BoardSummary) boardSummaryResponse {
+	resp := boardSummaryResponse{
+		boardResponse: newBoardResponse(b.Board), TaskCount: b.TaskCount, UpdatedAt: b.UpdatedAt,
+		Actors: make([]userRef, 0, len(b.Actors)),
+	}
+	for _, a := range b.Actors {
+		resp.Actors = append(resp.Actors, userRef{ID: uuid.UUID(a.ID), Name: a.Name})
+	}
+	return resp
+}
+
+type boardMemberResponse struct {
+	UserID uuid.UUID `json:"user_id"`
+	Name   string    `json:"name"`
+	Email  string    `json:"email"`
 }
 
 type columnResponse struct {
@@ -97,24 +129,26 @@ type columnWithTasksResponse struct {
 
 type boardHandler struct {
 	boards *board.Service
+	// authz authorizes the workspace a board moves to.
+	authz *workspace.Authorizer
 }
 
 // boardWorkspace and columnWorkspace resolve /boards/{id} and /columns/{id}
-// to their workspace for requireAccess.
-func (h *boardHandler) boardWorkspace(r *http.Request) (domain.ID, error) {
+// to their board and workspace for requireAccess.
+func (h *boardHandler) boardWorkspace(r *http.Request) (domain.Location, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return domain.NilID, err
+		return domain.Location{}, err
 	}
-	return h.boards.WorkspaceOfBoard(r.Context(), id)
+	return h.boards.LocationOfBoard(r.Context(), id)
 }
 
-func (h *boardHandler) columnWorkspace(r *http.Request) (domain.ID, error) {
+func (h *boardHandler) columnWorkspace(r *http.Request) (domain.Location, error) {
 	id, err := pathUUID(r)
 	if err != nil {
-		return domain.NilID, err
+		return domain.Location{}, err
 	}
-	return h.boards.WorkspaceOfColumn(r.Context(), id)
+	return h.boards.LocationOfColumn(r.Context(), id)
 }
 
 // pathID is only called behind requireAccess, which already parsed {id}.
@@ -128,30 +162,42 @@ type nameRequest struct {
 
 // --- boards ---
 
+// listBoards: GET /workspaces/{id}/boards[?archived=true], the boards the
+// caller may see: the archived ones, or (by default) the rest.
 func (h *boardHandler) listBoards(w http.ResponseWriter, r *http.Request) {
-	boards, err := h.boards.ListBoards(r.Context(), access(r))
+	archived := false
+	if v := r.URL.Query().Get("archived"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			WriteValidationError(w, map[string]string{"archived": "archived debe ser true o false"})
+			return
+		}
+		archived = b
+	}
+	boards, err := h.boards.ListBoards(r.Context(), access(r), archived)
 	if err != nil {
 		writeBoardError(w, r, "list boards", err)
 		return
 	}
-	out := make([]boardResponse, 0, len(boards))
+	out := make([]boardSummaryResponse, 0, len(boards))
 	for _, b := range boards {
-		out = append(out, newBoardResponse(b))
+		out = append(out, newBoardSummaryResponse(b))
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"boards": out})
 }
 
-// createBoard: POST /workspaces/{id}/boards {name, columns?}. The columns, if
-// any, are created with the board, in that order.
+// createBoard: POST /workspaces/{id}/boards {name, columns?, visibility?}.
+// The columns, if any, are created with the board, in that order.
 func (h *boardHandler) createBoard(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name    string   `json:"name"`
-		Columns []string `json:"columns"`
+		Name       string            `json:"name"`
+		Columns    []string          `json:"columns"`
+		Visibility domain.Visibility `json:"visibility"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	b, err := h.boards.CreateBoard(r.Context(), access(r), req.Name, req.Columns)
+	b, err := h.boards.CreateBoard(r.Context(), access(r), req.Name, req.Columns, req.Visibility)
 	if err != nil {
 		writeBoardError(w, r, "create board", err)
 		return
@@ -198,14 +244,99 @@ func (h *boardHandler) getBoard(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, resp)
 }
 
-func (h *boardHandler) renameBoard(w http.ResponseWriter, r *http.Request) {
-	var req nameRequest
+// updateBoard: PATCH /boards/{id} {name?, visibility?, archived?}.
+func (h *boardHandler) updateBoard(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name       *string            `json:"name"`
+		Visibility *domain.Visibility `json:"visibility"`
+		Archived   *bool              `json:"archived"`
+	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	b, err := h.boards.RenameBoard(r.Context(), access(r), pathID(r), req.Name)
+	b, err := h.boards.UpdateBoard(r.Context(), access(r), pathID(r), domain.BoardChanges{
+		Name: req.Name, Visibility: req.Visibility, Archived: req.Archived,
+	})
 	if err != nil {
-		writeBoardError(w, r, "rename board", err)
+		writeBoardError(w, r, "update board", err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, newBoardResponse(b))
+}
+
+func writeBoardMembers(w http.ResponseWriter, members []domain.BoardMember) {
+	out := make([]boardMemberResponse, 0, len(members))
+	for _, m := range members {
+		out = append(out, boardMemberResponse{UserID: uuid.UUID(m.UserID), Name: m.Name, Email: m.Email})
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"members": out})
+}
+
+// boardMembers: GET /boards/{id}/members, who was given the board while it
+// is private (admins see it anyway).
+func (h *boardHandler) boardMembers(w http.ResponseWriter, r *http.Request) {
+	members, err := h.boards.BoardMembers(r.Context(), access(r), pathID(r))
+	if err != nil {
+		writeBoardError(w, r, "list board members", err)
+		return
+	}
+	writeBoardMembers(w, members)
+}
+
+// setBoardMembers: PUT /boards/{id}/members {user_ids}, replacing them.
+func (h *boardHandler) setBoardMembers(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserIDs []uuid.UUID `json:"user_ids"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ids := make([]domain.ID, len(req.UserIDs))
+	for i, id := range req.UserIDs {
+		ids[i] = domain.ID(id)
+	}
+	members, err := h.boards.SetBoardMembers(r.Context(), access(r), pathID(r), ids)
+	if err != nil {
+		writeBoardError(w, r, "set board members", err)
+		return
+	}
+	writeBoardMembers(w, members)
+}
+
+// duplicateBoard: POST /boards/{id}/duplicate {name?}.
+func (h *boardHandler) duplicateBoard(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	b, err := h.boards.DuplicateBoard(r.Context(), access(r), pathID(r), req.Name)
+	if err != nil {
+		writeBoardError(w, r, "duplicate board", err)
+		return
+	}
+	WriteJSON(w, http.StatusCreated, newBoardResponse(b))
+}
+
+// moveBoard: POST /boards/{id}/move {workspace_id}, to another workspace
+// where the caller is an admin too.
+func (h *boardHandler) moveBoard(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WorkspaceID uuid.UUID `json:"workspace_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	acc := access(r)
+	target, err := h.authz.Authorize(r.Context(), acc.UserID, domain.ID(req.WorkspaceID), domain.ActionManageBoards)
+	if err != nil {
+		writeBoardError(w, r, "authorize target workspace", err)
+		return
+	}
+	b, err := h.boards.MoveBoard(r.Context(), acc, target, pathID(r))
+	if err != nil {
+		writeBoardError(w, r, "move board", err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newBoardResponse(b))
@@ -308,7 +439,7 @@ func writeBoardError(w http.ResponseWriter, r *http.Request, op string, err erro
 		return
 	}
 	switch {
-	case errors.Is(err, domain.ErrNotMember), errors.Is(err, domain.ErrForbidden):
+	case errors.Is(err, domain.ErrNotMember), errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrBoardArchived):
 		writeWorkspaceError(w, r, op, err)
 	// Only reachable if the resource was deleted after authorization.
 	case errors.Is(err, domain.ErrBoardNotFound):

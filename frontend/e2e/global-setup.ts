@@ -1,16 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { Client } from "pg";
 import { API_URL, apiCall, STATE_FILE, type Seed, type SeedUser } from "./support";
 
-// The database of the compose stack; its port is published on the host.
-const DATABASE_URL = process.env.E2E_DATABASE_URL ?? "postgres://tablero:tablero@localhost:5432/tablero?sslmode=disable";
 const PASSWORD = "e2e-contraseña-segura";
 
 /**
  * Three people in one workspace, fresh for each run: Ana (admin), Bruno (member)
- * and Vera (viewer). The API has no invitations yet, so the two memberships go
- * straight into the database.
+ * and Vera (viewer). Ana creates it and invites the other two by email: they
+ * have an account already, so they join at once.
  */
 export default async function globalSetup() {
   await waitForApi();
@@ -30,17 +27,10 @@ export default async function globalSetup() {
     password: PASSWORD,
   });
   const workspace = await apiCall<{ id: string }>("POST", "/workspaces", access_token, { name: `E2E ${run}` });
-
-  const db = new Client({ connectionString: DATABASE_URL });
-  await db.connect();
-  try {
-    await db.query(
-      `INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'member'), ($1, $3, 'viewer')`,
-      [workspace.id, bruno.id, vera.id],
-    );
-  } finally {
-    await db.end();
-  }
+  const invite = (email: string, role: string) =>
+    apiCall("POST", `/workspaces/${workspace.id}/invitations`, access_token, { emails: [email], role });
+  await invite(bruno.email, "member");
+  await invite(vera.email, "viewer");
 
   const seed: Seed = { workspaceId: workspace.id, ana, bruno, vera };
   mkdirSync(dirname(STATE_FILE), { recursive: true });

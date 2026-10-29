@@ -407,8 +407,8 @@ type fakeOnboarder struct {
 	err       error
 }
 
-func (f *fakeOnboarder) Onboard(_ context.Context, userID domain.ID) error {
-	f.onboarded = append(f.onboarded, userID)
+func (f *fakeOnboarder) Onboard(_ context.Context, user domain.User) error {
+	f.onboarded = append(f.onboarded, user.ID)
 	return f.err
 }
 
@@ -452,5 +452,15 @@ func TestRegisterFailsIfOnboardingFails(t *testing.T) {
 	// The real transaction rolls the user back; here, no session was issued.
 	if len(e.refresh.saved) != 0 {
 		t.Errorf("a session was issued: %d refresh tokens", len(e.refresh.saved))
+	}
+}
+
+// Onboarders runs every step in order and stops at the first that fails.
+func TestOnboardersRunInOrderAndStopOnError(t *testing.T) {
+	first, second, third := &fakeOnboarder{}, &fakeOnboarder{err: errors.New("boom")}, &fakeOnboarder{}
+	user := domain.User{ID: domain.NewID()}
+	err := auth.Onboarders{first, second, third}.Onboard(context.Background(), user)
+	if err == nil || len(first.onboarded) != 1 || len(second.onboarded) != 1 || len(third.onboarded) != 0 {
+		t.Errorf("err = %v, ran %d/%d/%d", err, len(first.onboarded), len(second.onboarded), len(third.onboarded))
 	}
 }

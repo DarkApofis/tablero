@@ -219,18 +219,18 @@ Con `DEFAULT_WORKSPACE_ID`, cada cuenta que se registra entra en ese workspace c
 | Ver tableros, tareas y actividad | ✓ | ✓ |
 | Crear, editar, mover y borrar tareas | ✓ | ✓ |
 | Crear, editar y borrar etiquetas | ✓ | ✓ |
-| Crear, renombrar y borrar tableros y columnas | ✓ | |
-| Cambiar roles y quitar miembros | ✓ | |
+| Crear, renombrar, archivar, mover y borrar tableros y columnas | ✓ | |
+| Invitar, cambiar roles y quitar miembros | ✓ | |
 | Borrar el workspace | — | — |
 
-Borrar un workspace no es posible para nadie: la API no tiene esa operación.
+El workspace por defecto no lo puede borrar nadie, ni sus admins (`409 default_workspace`). Los demás los puede borrar cualquiera de sus admins.
 
 Para crearlo en producción, en el **SQL Editor** de Neon (antes, una instantánea en **Branches → production → Create snapshot**), con tu correo, para que tú seas su admin:
 
 ```sql
 BEGIN;
 WITH me AS (SELECT id FROM users WHERE email = 'tu-correo@ejemplo.com'),
-ws AS (INSERT INTO workspaces (name) VALUES ('Tablero') RETURNING id),
+ws AS (INSERT INTO workspaces (name, slug) VALUES ('Tablero', 'tablero') RETURNING id),
 member AS (
   INSERT INTO workspace_members (workspace_id, user_id, role)
   SELECT ws.id, me.id, 'admin' FROM ws, me RETURNING workspace_id
@@ -243,7 +243,7 @@ RETURNING (SELECT workspace_id FROM member) AS default_workspace_id;
 COMMIT;
 ```
 
-Ese workspace se crea por SQL sin `created_by`, así que no cuenta para tu límite de 2 workspaces propios.
+Ese workspace se crea por SQL sin `created_by` ni `owner_id`: no cuenta para tu límite de 2 workspaces propios y no tiene propietario, así que cualquiera de sus admins puede transferirlo. Si la dirección `tablero` ya está ocupada, usa otra (minúsculas, números y guiones).
 
 Pon ese id en **Render → tablero-api → Environment → `DEFAULT_WORKSPACE_ID`** y guarda (Render redespliega). En los logs verás `"new accounts join the default workspace as members"`.
 

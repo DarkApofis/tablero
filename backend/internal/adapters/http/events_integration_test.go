@@ -269,6 +269,30 @@ func TestEventStreamClosesWhenTheMemberIsRemoved(t *testing.T) {
 	}
 }
 
+// The same goes for a board made private (the viewer was not given it) or
+// moved to a workspace they are not in.
+func TestEventStreamClosesWhenTheBoardBecomesPrivate(t *testing.T) {
+	f := newTaskFixture(t)
+	srv := f.streamServer(50*time.Millisecond, 0)
+	s := f.openStream(srv, f.board, f.viewer)
+	s.next(t, time.Second)
+
+	if rec := f.do("PATCH", "/boards/"+f.board.String(), `{"visibility":"private"}`, f.admin); rec.Code != http.StatusOK {
+		t.Fatalf("make private: %d", rec.Code)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-s.frames:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the stream of someone who lost the board is still open")
+		}
+	}
+}
+
 func TestEventStreamAuth(t *testing.T) {
 	f := newTaskFixture(t)
 	srv := f.streamServer(time.Minute, 0)
