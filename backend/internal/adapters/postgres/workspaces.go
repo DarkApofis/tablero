@@ -25,6 +25,11 @@ func (r *Workspaces) Create(ctx context.Context, name string) (domain.Workspace,
 	return domain.Workspace{ID: domain.ID(ws.ID), Name: ws.Name, CreatedAt: ws.CreatedAt}, err
 }
 
+// Exists reports whether the workspace exists.
+func (r *Workspaces) Exists(ctx context.Context, id domain.ID) (bool, error) {
+	return r.q(ctx).WorkspaceExists(ctx, uuid.UUID(id))
+}
+
 func (r *Workspaces) AddMember(ctx context.Context, workspaceID, userID domain.ID, role domain.Role) error {
 	return r.q(ctx).AddWorkspaceMember(ctx, db.AddWorkspaceMemberParams{
 		WorkspaceID: uuid.UUID(workspaceID), UserID: uuid.UUID(userID), Role: db.WorkspaceRole(role),

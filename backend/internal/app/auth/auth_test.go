@@ -401,3 +401,56 @@ func TestLogoutRevokesToken(t *testing.T) {
 		}
 	}
 }
+
+type fakeOnboarder struct {
+	onboarded []domain.ID
+	err       error
+}
+
+func (f *fakeOnboarder) Onboard(_ context.Context, userID domain.ID) error {
+	f.onboarded = append(f.onboarded, userID)
+	return f.err
+}
+
+// fakeTx runs fn and counts the transactions.
+type fakeTx struct{ n int }
+
+func (f *fakeTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	f.n++
+	return fn(ctx)
+}
+
+func TestRegisterOnboardsInTheSameTransaction(t *testing.T) {
+	e := newEnv(t)
+	onboard, tx := &fakeOnboarder{}, &fakeTx{}
+	svc := e.svc.WithOnboarding(tx, onboard)
+
+	s, err := svc.Register(context.Background(), "nueva@example.com", "Nueva", "supersecreta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onboard.onboarded) != 1 || onboard.onboarded[0] != s.User.ID || tx.n != 1 {
+		t.Errorf("onboarded %v in %d transactions, want [%s] in 1", onboard.onboarded, tx.n, s.User.ID)
+	}
+
+	// The original service still registers without it (the demo's guests).
+	if _, err := e.svc.Register(context.Background(), "invitada@example.com", "Invitada", "supersecreta"); err != nil {
+		t.Fatal(err)
+	}
+	if len(onboard.onboarded) != 1 {
+		t.Errorf("the service without onboarding onboarded someone: %v", onboard.onboarded)
+	}
+}
+
+func TestRegisterFailsIfOnboardingFails(t *testing.T) {
+	e := newEnv(t)
+	svc := e.svc.WithOnboarding(&fakeTx{}, &fakeOnboarder{err: errors.New("no such workspace")})
+
+	if _, err := svc.Register(context.Background(), "nueva@example.com", "Nueva", "supersecreta"); err == nil {
+		t.Fatal("registered although onboarding failed")
+	}
+	// The real transaction rolls the user back; here, no session was issued.
+	if len(e.refresh.saved) != 0 {
+		t.Errorf("a session was issued: %d refresh tokens", len(e.refresh.saved))
+	}
+}

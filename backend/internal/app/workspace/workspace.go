@@ -64,6 +64,22 @@ func (a *Authorizer) Authorize(ctx context.Context, userID, workspaceID domain.I
 	return acc, acc.Require(action)
 }
 
+// DefaultMembership puts every new account in one workspace as a member: they
+// can create, edit, move and delete its tasks and manage its labels, but not
+// its boards, columns, members or settings. auth.Service.WithOnboarding runs it.
+type DefaultMembership struct {
+	repo        WorkspaceRepository
+	workspaceID domain.ID
+}
+
+func NewDefaultMembership(repo WorkspaceRepository, workspaceID domain.ID) *DefaultMembership {
+	return &DefaultMembership{repo: repo, workspaceID: workspaceID}
+}
+
+func (d *DefaultMembership) Onboard(ctx context.Context, userID domain.ID) error {
+	return d.repo.AddMember(ctx, d.workspaceID, userID, domain.RoleMember)
+}
+
 type Service struct {
 	repo   WorkspaceRepository
 	tx     TxManager

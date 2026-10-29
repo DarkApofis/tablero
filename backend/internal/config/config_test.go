@@ -155,3 +155,20 @@ func TestProxySettings(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultWorkspaceID(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://tablero:tablero@db:5432/tablero")
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+
+	if cfg, err := Load(); err != nil || cfg.DefaultWorkspaceID != "" {
+		t.Fatalf("default: %q, %v", cfg.DefaultWorkspaceID, err)
+	}
+	t.Setenv("DEFAULT_WORKSPACE_ID", "8aad0329-28c9-43af-9a8c-0a5153886978")
+	if cfg, err := Load(); err != nil || cfg.DefaultWorkspaceID != "8aad0329-28c9-43af-9a8c-0a5153886978" {
+		t.Errorf("cfg = %q, %v", cfg.DefaultWorkspaceID, err)
+	}
+	t.Setenv("DEFAULT_WORKSPACE_ID", "Estudio Nube")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "DEFAULT_WORKSPACE_ID") {
+		t.Errorf("a name instead of an id: %v", err)
+	}
+}

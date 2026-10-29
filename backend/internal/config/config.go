@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const minJWTSecretLen = 32
@@ -58,6 +60,11 @@ type Config struct {
 	MigrateOnStart     bool
 	MigrationsDir      string
 	MigrateLockTimeout time.Duration
+
+	// DefaultWorkspaceID (DEFAULT_WORKSPACE_ID, default none) is the workspace
+	// every new account joins as a member. The API does not start if it does
+	// not exist.
+	DefaultWorkspaceID string
 	// On SIGTERM the API first answers GET /ready with 503 and keeps serving
 	// for ShutdownDelay (SHUTDOWN_DELAY, default 0s), so a load balancer stops
 	// sending it traffic and connections already queued get served. Then it
@@ -167,6 +174,11 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.MigrationsDir = getenv("MIGRATIONS_DIR", "migrations")
+	if cfg.DefaultWorkspaceID = os.Getenv("DEFAULT_WORKSPACE_ID"); cfg.DefaultWorkspaceID != "" {
+		if _, err := uuid.Parse(cfg.DefaultWorkspaceID); err != nil {
+			errs = append(errs, fmt.Errorf("DEFAULT_WORKSPACE_ID must be a workspace id (a UUID), got %q", cfg.DefaultWorkspaceID))
+		}
+	}
 	if cfg.MigrateLockTimeout, err = getDuration("MIGRATE_LOCK_TIMEOUT", 5*time.Second); err != nil {
 		errs = append(errs, err)
 	}

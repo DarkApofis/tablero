@@ -363,3 +363,14 @@ func (q *Queries) UpdateMemberRole(ctx context.Context, arg UpdateMemberRolePara
 	}
 	return result.RowsAffected(), nil
 }
+
+const workspaceExists = `-- name: WorkspaceExists :one
+SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1)
+`
+
+func (q *Queries) WorkspaceExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, workspaceExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}

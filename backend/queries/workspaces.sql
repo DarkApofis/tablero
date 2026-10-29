@@ -3,6 +3,9 @@ INSERT INTO workspaces (name)
 VALUES ($1)
 RETURNING *;
 
+-- name: WorkspaceExists :one
+SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1);
+
 -- name: AddWorkspaceMember :exec
 INSERT INTO workspace_members (workspace_id, user_id, role)
 VALUES ($1, $2, $3);

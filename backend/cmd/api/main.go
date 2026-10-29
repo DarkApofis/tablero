@@ -24,6 +24,7 @@ import (
 	"github.com/DarkApofis/tablero/backend/internal/app/workspace"
 	"github.com/DarkApofis/tablero/backend/internal/config"
 	"github.com/DarkApofis/tablero/backend/internal/demo"
+	"github.com/DarkApofis/tablero/backend/internal/domain"
 )
 
 // main.go is the composition root: it builds the adapters, hands them to the
@@ -137,6 +138,22 @@ func run() error {
 		slog.Info("demo mode on", "reset_every", cfg.DemoResetInterval.String(), "guest_ttl", cfg.DemoGuestTTL.String())
 	}
 
+	// New accounts join the default workspace as members. Guests of the demo
+	// (above) register through authService itself, without it.
+	httpAuth := authService
+	if cfg.DefaultWorkspaceID != "" {
+		wsID, _ := domain.ParseID(cfg.DefaultWorkspaceID) // validated by config.Load
+		exists, err := workspaces.Exists(ctx, wsID)
+		if err != nil {
+			return fmt.Errorf("check DEFAULT_WORKSPACE_ID: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("DEFAULT_WORKSPACE_ID %s: no such workspace, not starting", wsID)
+		}
+		httpAuth = authService.WithOnboarding(tx, workspace.NewDefaultMembership(workspaces, wsID))
+		slog.Info("new accounts join the default workspace as members", "workspace", wsID.String())
+	}
+
 	var authLimits *httpapi.AuthLimits
 	if cfg.RateLimit {
 		authLimits = &httpapi.DefaultAuthLimits
@@ -156,7 +173,7 @@ func run() error {
 			StreamLimits: httpapi.StreamLimits{PerUser: cfg.SSEMaxPerUser, PerBoard: cfg.SSEMaxPerBoard},
 			Ready:        pool,
 			ShuttingDown: &shuttingDown,
-			Auth:         authService,
+			Auth:         httpAuth,
 			Authorizer:   workspace.NewAuthorizer(workspaces),
 			Workspaces:   workspace.NewService(workspaces, tx, publisher),
 			Boards:       board.NewService(boards, labels, activity, tx, publisher),

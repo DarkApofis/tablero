@@ -63,6 +63,16 @@ type Clock interface {
 	Now() time.Time
 }
 
+// Onboarder sets up what a new account starts with (the default workspace);
+// it runs in the registration's transaction.
+type Onboarder interface {
+	Onboard(ctx context.Context, userID domain.ID) error
+}
+
+type TxManager interface {
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 // Service implements the use cases.
 type Service struct {
 	users      UserRepository
@@ -75,6 +85,10 @@ type Service struct {
 	// dummyHash is verified against when the email does not exist, so an
 	// unknown email costs the same hashing work as a wrong password.
 	dummyHash string
+
+	// onboard, if set, runs on every registration (see WithOnboarding).
+	onboard Onboarder
+	tx      TxManager
 }
 
 func NewService(users UserRepository, refresh RefreshTokenRepository, hasher PasswordHasher, tokens TokenIssuer, clock Clock, refreshTTL time.Duration) (*Service, error) {
@@ -99,23 +113,51 @@ type Session struct {
 	RefreshExpiresAt time.Time
 }
 
+// WithOnboarding returns a copy of the service whose Register also runs
+// onboard, in one transaction with creating the user and the session: an
+// account is never left without what it should start with. Copies share
+// everything else, so the original keeps registering without it (the demo's
+// guest accounts).
+func (s *Service) WithOnboarding(tx TxManager, onboard Onboarder) *Service {
+	c := *s
+	c.tx, c.onboard = tx, onboard
+	return &c
+}
+
 func (s *Service) Register(ctx context.Context, email, name, password string) (Session, error) {
 	reg, err := domain.NewRegistration(email, name, password)
 	if err != nil {
 		return Session{}, err
 	}
-	hash, err := s.hasher.Hash(reg.Password)
+	hash, err := s.hasher.Hash(reg.Password) // slow: outside the transaction
 	if err != nil {
 		return Session{}, fmt.Errorf("hash password: %w", err)
 	}
-	user, err := s.users.Create(ctx, reg.Email, reg.Name, hash)
-	if err != nil {
-		if errors.Is(err, domain.ErrEmailTaken) {
-			return Session{}, err
+	register := func(ctx context.Context) (Session, error) {
+		user, err := s.users.Create(ctx, reg.Email, reg.Name, hash)
+		if err != nil {
+			if errors.Is(err, domain.ErrEmailTaken) {
+				return Session{}, err
+			}
+			return Session{}, fmt.Errorf("create user: %w", err)
 		}
-		return Session{}, fmt.Errorf("create user: %w", err)
+		if s.onboard != nil {
+			if err := s.onboard.Onboard(ctx, user.ID); err != nil {
+				return Session{}, fmt.Errorf("onboard user: %w", err)
+			}
+		}
+		return s.newSession(ctx, user)
 	}
-	return s.newSession(ctx, user)
+	if s.onboard == nil {
+		return register(ctx)
+	}
+	var session Session
+	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		session, err = register(ctx)
+		return err
+	})
+	return session, err
 }
 
 // Login returns domain.ErrInvalidCredentials for an unknown email and for a

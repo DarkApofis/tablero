@@ -134,6 +134,7 @@ Variables disponibles:
 | `RATE_LIMIT` | `true` | Límites de intentos en login, registro e invitados |
 | `SSE_MAX_PER_USER` | `10` | Streams en vivo abiertos por usuario (por instancia) |
 | `SSE_MAX_PER_BOARD` | `1000` | Streams en vivo abiertos por tablero (por instancia) |
+| `DEFAULT_WORKSPACE_ID` | — | Workspace al que entra cada cuenta nueva, como **miembro**: puede crear, editar, mover y borrar tareas y gestionar etiquetas, pero no tableros, columnas, miembros ni configuración. La API no arranca si no existe |
 | `MIGRATE_ON_START` | `false` | Aplicar las migraciones al arrancar, antes de abrir el puerto (para plataformas sin paso de pre-deploy, ver `docs/DEPLOY.md`) |
 | `MIGRATIONS_DIR` / `MIGRATE_LOCK_TIMEOUT` | `migrations` / `5s` | Dónde están las migraciones y cuánto puede esperar una por un bloqueo de tabla |
 | `SHUTDOWN_DELAY` | `0s` | Al recibir SIGTERM, cuánto sigue atendiendo con `/ready` en 503 antes de dejar de aceptar conexiones |

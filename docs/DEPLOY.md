@@ -64,6 +64,7 @@ Fuentes: [Render, plan gratuito](https://render.com/docs/free), [Neon, precios](
 | `COOKIE_PATH_PREFIX` | `/api` | Fijo | Las cookies van a `/api/auth` y `/api/boards`, las rutas que ve el navegador |
 | `COOKIE_SECURE` / `COOKIE_SAMESITE` | `true` / `lax` | Fijo | Cookies solo por HTTPS y propias del sitio de Vercel |
 | `TRUST_PROXY` / `TRUST_PROXY_HOPS` | `true` / `2` | Fijo | La IP del cliente viene en `X-Forwarded-For` a través de dos proxies (Vercel y Render). Se verifica en el paso 7 |
+| `DEFAULT_WORKSPACE_ID` | El id del workspace por defecto | Lo pones tú en **Environment** | Cada cuenta nueva entra ahí como **miembro**. Si el workspace no existe, la API no arranca. Vacío: las cuentas nuevas no entran en ninguno |
 | `MIGRATE_ON_START` / `MIGRATE_LOCK_TIMEOUT` | `true` / `5s` | Fijo | Migrar al arrancar (el plan gratuito no tiene pre-deploy) y cuánto puede esperar una migración por un bloqueo de tabla |
 | `PORT` | `8080` | Fijo | Puerto dentro del contenedor |
 | `EVENTS_BACKEND` | `memory` | Fijo | Eventos en vivo en memoria: una sola instancia |
@@ -208,6 +209,49 @@ En [UptimeRobot](https://uptimerobot.com) (o [cron-job.org](https://cron-job.org
    ```
 
    Después, desde otra red (los datos del móvil), un login fallido tiene que dar **401**, no 429. Si da 429, todos los clientes comparten una IP de proxy: hay que ajustar `TRUST_PROXY_HOPS`.
+
+## Workspace por defecto para las cuentas nuevas
+
+Con `DEFAULT_WORKSPACE_ID`, cada cuenta que se registra entra en ese workspace como **miembro**, en la misma transacción que la crea: si no puede unirse, no se crea. Las cuentas de invitado del modo demo no entran.
+
+| | admin | **miembro** (cuentas nuevas) |
+|---|---|---|
+| Ver tableros, tareas y actividad | ✓ | ✓ |
+| Crear, editar, mover y borrar tareas | ✓ | ✓ |
+| Crear, editar y borrar etiquetas | ✓ | ✓ |
+| Crear, renombrar y borrar tableros y columnas | ✓ | |
+| Cambiar roles y quitar miembros | ✓ | |
+| Borrar el workspace | — | — |
+
+Borrar un workspace no es posible para nadie: la API no tiene esa operación.
+
+Para crearlo en producción, en el **SQL Editor** de Neon (antes, una instantánea en **Branches → production → Create snapshot**), con tu correo, para que tú seas su admin:
+
+```sql
+BEGIN;
+WITH me AS (SELECT id FROM users WHERE email = 'tu-correo@ejemplo.com'),
+ws AS (INSERT INTO workspaces (name) VALUES ('Tablero') RETURNING id),
+member AS (
+  INSERT INTO workspace_members (workspace_id, user_id, role)
+  SELECT ws.id, me.id, 'admin' FROM ws, me RETURNING workspace_id
+),
+board AS (INSERT INTO boards (workspace_id, name) SELECT workspace_id, 'General' FROM member RETURNING id)
+INSERT INTO columns (board_id, name, position)
+SELECT board.id, c.name, c.pos FROM board, (VALUES ('Pendiente', 1000), ('En progreso', 2000), ('Hecho', 3000)) AS c(name, pos)
+RETURNING (SELECT workspace_id FROM member) AS default_workspace_id;
+-- Debe devolver 3 filas con el mismo id: es DEFAULT_WORKSPACE_ID. Si no devuelve ninguna, el correo no existe: ROLLBACK;
+COMMIT;
+```
+
+Pon ese id en **Render → tablero-api → Environment → `DEFAULT_WORKSPACE_ID`** y guarda (Render redespliega). En los logs verás `"new accounts join the default workspace as members"`.
+
+Para meter también a las cuentas que ya existían (opcional):
+
+```sql
+INSERT INTO workspace_members (workspace_id, user_id, role)
+SELECT '<DEFAULT_WORKSPACE_ID>', id, 'member' FROM users
+ON CONFLICT (workspace_id, user_id) DO NOTHING;
+```
 
 ## Operación
 

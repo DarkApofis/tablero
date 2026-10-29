@@ -37,6 +37,8 @@ services:
         generateValue: true # 256 random bits, generated once
       - key: CORS_ORIGINS
         sync: false # the frontend's origin: https://tablero.vercel.app (or the one Vercel gives)
+      - key: DEFAULT_WORKSPACE_ID
+        sync: false # workspace every new account joins as a member (docs/DEPLOY.md)
       - key: MIGRATE_ON_START
         value: "true"
       - key: MIGRATE_LOCK_TIMEOUT
